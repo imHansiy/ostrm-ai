@@ -18,6 +18,7 @@ def request(method,path,**kwargs):
 wait(lambda:client.get(base+'/System/Info/Public').status_code==200)
 wait(lambda:client.get(base+'/Startup/Configuration').status_code==200)
 request('POST','/Startup/Configuration',json={'UICulture':'en-US','MetadataCountryCode':'CN','PreferredMetadataLanguage':'zh'})
+request('GET','/Startup/User') # Jellyfin 10.11 initializes its first user here.
 request('POST','/Startup/User',json={'Name':'protocol-test','Password':'Fixture-Only-2026!'})
 request('POST','/Startup/RemoteAccess',json={'EnableRemoteAccess':True,'EnableAutomaticPortMapping':False})
 request('POST','/Startup/Complete')

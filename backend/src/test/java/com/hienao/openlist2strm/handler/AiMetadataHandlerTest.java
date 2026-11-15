@@ -45,7 +45,7 @@ class AiMetadataHandlerTest {
             .build();
     AiMetadataHandler handler =
         new AiMetadataHandler(bridge, strm, new ObjectMapper(), folder.toString(), true);
-    assertEquals(35, handler.getOrder());
+    assertEquals(55, handler.getOrder());
     assertEquals(ProcessingResult.SUCCESS, handler.process(context));
     ArgumentCaptor<byte[]> body = ArgumentCaptor.forClass(byte[].class);
     verify(bridge).call(eq("/ostrm/metadata"), eq(HttpMethod.POST), body.capture());

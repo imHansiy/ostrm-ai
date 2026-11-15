@@ -77,7 +77,7 @@ public class AiMetadataHandler implements FileProcessorHandler {
 
   @Override
   public int getOrder() {
-    return 35;
+    return 55;
   }
 
   @Override

@@ -2,6 +2,17 @@ name: AI protocols and external clients
 on:
   push:
     branches: [dev]
+    paths:
+      - 'ai-service/**'
+      - 'backend/**'
+      - 'frontend/**'
+      - 'tests/**'
+      - 'Dockerfile'
+      - 'Caddyfile'
+      - '.dockerignore'
+      - 'compose.ai.yml'
+      - '.env.ai.example'
+      - '.github/workflows/ai-protocols.yml'
   workflow_dispatch:
 permissions:
   contents: read
