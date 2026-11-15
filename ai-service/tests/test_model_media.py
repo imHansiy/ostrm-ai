@@ -177,6 +177,8 @@ def test_real_video_decode_and_budget(tmp_path):
         assert video['duration']==pytest.approx(2,.1)
         assert 0<video['video_bytes']<=NATIVE_VIDEO_MAX_BYTES
         assert len(video['video'])==4*((video['video_bytes']+2)//3)
+        import base64
+        assert base64.b64decode(video['cover']).startswith(b'\xff\xd8')
         assert video['encoding']['preset']=='veryfast' and video['encoding']['passes']==1
         long_video=compress_video(origin+'/long.mp4',origin,settings)
         assert long_video['duration']==pytest.approx(190,abs=.1)

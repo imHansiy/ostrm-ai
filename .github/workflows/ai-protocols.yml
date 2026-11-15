@@ -53,6 +53,20 @@ jobs:
           exit 1
       - run: npm run sdk
         working-directory: tests/clients
+      - name: Exercise complete Docker deployment through Caddy
+        run: |
+          mkdir -p .local/docker-ai .local/docker-java .local/docker-exports
+          docker run -d --name ai-container --network host \
+            -e OPENLIST_URL=http://127.0.0.1:18789 -e OPENLIST_TOKEN=fixture-admin \
+            -e MODEL_API_KEY=fixture-only -e AI_BRIDGE_KEY=fixture-bridge-key \
+            -v "$PWD/.local/docker-ai:/data" -v "$PWD/.local/docker-exports:/exports" ostrm-ai-worker:ci
+          docker run -d --name app-container --network host --add-host ai:127.0.0.1 \
+            -e AI_SERVICE_URL=http://127.0.0.1:8787 -e AI_BRIDGE_KEY=fixture-bridge-key \
+            -e JWT_SECRET=fixture-jwt-secret-at-least-32-characters-long \
+            -v "$PWD/.local/docker-java:/maindata" -v "$PWD/.local/docker-exports:/app/backend/strm" ostrm-ai-app:ci
+          STACK_URL=http://127.0.0.1 AI_URL=http://127.0.0.1:8787 MEDIA_TEST_URL=http://127.0.0.1 \
+            CLIENT_FIXTURE=.local/docker-stack.json python tests/integration/check_stack.py
+          curl --fail http://127.0.0.1/ai-center > /dev/null
       - name: Test Nuxt desktop and mobile
         run: |
           python tests/integration/ui_gateway.py > .local/integration/gateway.log 2>&1 &

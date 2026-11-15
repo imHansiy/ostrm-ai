@@ -284,6 +284,18 @@ class Worker:
                           (json.dumps(result,ensure_ascii=False),time.time(),task['path'],task['fingerprint']))
                 c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
             self.db.event(task['path'],'done','压缩视频识别完成' if 'video' in sample else '视频抽帧识别完成')
+            if sample.get('cover'):
+                try:
+                    import base64
+                    from .covers import cached_cover
+                    if not cached_cover(self.db,task['path'],task['fingerprint']):
+                        jpeg=base64.b64decode(sample['cover'],validate=True)
+                        if not (0<len(jpeg)<=1024**2 and jpeg.startswith(b'\xff\xd8') and jpeg.endswith(b'\xff\xd9')):
+                            raise ValueError('Invalid cached cover')
+                        try:sidecar=store_sidecar(self.ol,task['path'],task['fingerprint'],jpeg,self.ol.admin_token())
+                        except Exception:sidecar=None
+                        save_cover(self.db,task['path'],task['fingerprint'],sidecar,jpeg)
+                except Exception:self.db.event(task['path'],'warning','识别已完成，封面可在后台补齐')
             if self.on_result:
                 try:self.on_result(task['path'])
                 except Exception:self.db.event(task['path'],'warning','识别已完成，外部资料发布暂时失败，可重新同步')

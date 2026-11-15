@@ -16,6 +16,7 @@ def request(method,path,**kwargs):
     response=client.request(method,base+path,**kwargs);response.raise_for_status()
     return response
 wait(lambda:client.get(base+'/System/Info/Public').status_code==200)
+wait(lambda:client.get(base+'/Startup/Configuration').status_code==200)
 request('POST','/Startup/Configuration',json={'UICulture':'en-US','MetadataCountryCode':'CN','PreferredMetadataLanguage':'zh'})
 request('POST','/Startup/User',json={'Name':'protocol-test','Password':'Fixture-Only-2026!'})
 request('POST','/Startup/RemoteAccess',json={'EnableRemoteAccess':True,'EnableAutomaticPortMapping':False})

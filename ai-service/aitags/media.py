@@ -368,4 +368,14 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
                     'encoding':encoding}
             if subtitle_data:
                 sample['subtitles'] = subtitle_data
+            # Reuse the already downloaded, compressed timeline for artwork.
+            # This does not issue a second cloud-media read.
+            try:
+                cover=Path(temp)/'poster.jpg'
+                run_process([config.FFMPEG,'-v','error','-nostdin','-y','-threads','1',
+                    '-ss',str(min(duration/3,30)),'-i',str(output),'-frames:v','1','-an',
+                    '-threads','1','-q:v','3',str(cover)],min(10,remaining()),cancelled)
+                data=cover.read_bytes()
+                if 0<len(data)<=1024**2:sample['cover']=base64.b64encode(data).decode()
+            except (MediaError,OSError):pass
             return sample

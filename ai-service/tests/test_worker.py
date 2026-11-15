@@ -4,6 +4,20 @@ from .conftest import add_video
 import pytest
 
 
+def test_recognition_reuses_local_artwork_without_cover_backfill(env,monkeypatch):
+    import base64,io
+    from PIL import Image
+    from aitags.covers import cached_cover
+    db,ol,w,client=env
+    run=w.create_run('/public');w.enqueue('/public/a.mp4',ol.objects['/public/a.mp4'],run)
+    output=io.BytesIO();Image.new('RGB',(32,32),'blue').save(output,'JPEG');jpeg=output.getvalue()
+    monkeypatch.setattr('aitags.worker.compress_video',lambda *args,**kwargs:{'cover':base64.b64encode(jpeg).decode()})
+    monkeypatch.setattr('aitags.worker.infer',lambda *args,**kwargs:{'summary':'蓝色画面','tags':['蓝色']})
+    assert w.work_once()
+    row=db.one("SELECT * FROM videos WHERE path='/public/a.mp4'")
+    assert row['status']=='done' and cached_cover(db,row['path'],row['fingerprint'])==jpeg
+
+
 def test_scan_pagination_incremental_and_exclusion(env):
     db,ol,w,c=env
     db.save_settings({'page_size':1,'exclude':['/secret']})
