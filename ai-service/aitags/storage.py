@@ -221,7 +221,8 @@ def copy_database(source, destination):
             placeholders=','.join('?' for _ in names)
             dst.executemany(f'INSERT INTO `{table}` ({columns}) VALUES ({placeholders})',values)
             actual=[tuple(row[name] for name in names) for row in dst.execute(select).fetchall()]
-            if sorted(values,key=lambda row:row[0])!=sorted(actual,key=lambda row:row[0]):
+            from collections import Counter
+            if Counter(values)!=Counter(actual):
                 raise RuntimeError(f'Data verification failed for {table}')
             counts[table]=len(values)
     return counts
