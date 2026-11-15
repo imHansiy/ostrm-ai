@@ -80,6 +80,8 @@ jobs:
           STACK_URL=http://127.0.0.1 AI_URL=http://127.0.0.1:8787 MEDIA_TEST_URL=http://127.0.0.1 \
             CLIENT_FIXTURE=.local/docker-stack.json python tests/integration/check_stack.py
           curl --fail http://127.0.0.1/ai-center > /dev/null
+      - name: Verify persisted data across actual container restarts
+        run: python tests/integration/check_container_restart.py
       - name: Test Nuxt desktop and mobile
         run: |
           python tests/integration/ui_gateway.py > .local/integration/gateway.log 2>&1 &

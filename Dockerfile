@@ -91,7 +91,7 @@ RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     echo "Asia/Shanghai" > /etc/timezone && \
     echo "fs.file-max = 65536" >> /etc/sysctl.conf && \
     echo "fs.inotify.max_user_watches = 524288" >> /etc/sysctl.conf && \
-    mkdir -p /var/log/caddy /var/www/html /maindata/{config,db,log} /app/data/{config/{db},log} /app/backend/strm && \
+    mkdir -p /var/log/caddy /var/www/html /maindata/config /maindata/db /maindata/log /app/data/config/db /app/data/log /app/backend/strm && \
     touch /var/log/caddy/access.log && \
     chmod -R 755 /maindata /app/data /app/backend /var/log/caddy && \
     rm -rf /tmp/* /var/tmp/*
@@ -103,6 +103,7 @@ COPY --from=backend-builder /openlisttostrm.jar ./openlisttostrm.jar
 # Create optimized startup script with long filename support
 RUN echo '#!/bin/bash' > /start.sh && \
     echo 'set -e' >> /start.sh && \
+    echo 'mkdir -p "${APP_DATA_PATH:-/maindata}" "${APP_CONFIG_PATH:-/maindata/config}" "${APP_LOG_PATH:-/maindata/log}" "${APP_FRONTEND_LOGS_PATH:-/maindata/log/frontend}" "${APP_STRM_PATH:-/app/backend/strm}" "$(dirname "${APP_DATABASE_PATH:-/maindata/db/openlist2strm.db}")" "$(dirname "${APP_USER_INFO_PATH:-/maindata/config/userInfo.json}")"' >> /start.sh && \
     echo 'echo "=== Container Startup ==="' >> /start.sh && \
     echo 'echo "Java Version:"' >> /start.sh && \
     echo 'java -version 2>&1 | head -1' >> /start.sh && \
@@ -125,5 +126,7 @@ ENV LANGUAGE=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
 EXPOSE 80 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s CMD curl --fail --silent http://127.0.0.1/api/auth/check-user > /dev/null || exit 1
 
 CMD ["/start.sh"]
