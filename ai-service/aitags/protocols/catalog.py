@@ -145,7 +145,7 @@ class MediaCatalog:
     def links(self,publication):
         return {name:self.url(publication,path) for name,path in {
             'strm_nfo_zip':'library.zip','m3u':'playlist.m3u','rss':'rss.xml','podcast':'podcast.xml',
-            'maccms':'api.php/provide/vod','tvbox':'tvbox.json','libretv':'libretv.json'}.items()}|{
+            'maccms':'api.php/provide/vod','tvbox':'tvbox.json','tvbox_split':'tvbox-split.json','libretv':'libretv.json'}.items()}|{
                 'jellyfin_server':publication['public_base_url']+'/media/jellyfin/'+publication['id'],
                 'jellyfin_username':publication['id'],'jellyfin_password':self.store.secret(publication['id']),
                 'webdav_server':os.getenv('PUBLIC_OPENLIST_URL',config.OPENLIST_URL).rstrip('/')+'/dav',

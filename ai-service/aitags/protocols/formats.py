@@ -130,7 +130,13 @@ def cms_item(catalog,publication,item):
         'vod_play_url':'播放$'+catalog.url(publication,'stream',item)}
 
 
-def tvbox(catalog,publication):
+def tvbox(catalog,publication,split=False):
+    if split and publication['content']=='all':
+        api=catalog.url(publication,'api.php/provide/vod')
+        return {'sites':[{'key':'ostrm_ai_'+publication['id']+'_'+scope,
+            'name':publication['name']+' · '+name,'type':1,'api':api+'/'+scope,
+            'searchable':1,'quickSearch':1,'filterable':0}
+            for scope,name in [('general','非成人'),('adult','成人')]],'lives':[]}
     return {'sites':[{'key':'ostrm_ai_'+publication['id'],'name':publication['name'],'type':1,
         'api':catalog.url(publication,'api.php/provide/vod'),'searchable':1,'quickSearch':1,'filterable':0}],
         'lives':[{'name':publication['name'],'type':0,'url':catalog.url(publication,'playlist.m3u')}]}

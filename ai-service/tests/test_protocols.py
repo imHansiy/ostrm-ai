@@ -15,6 +15,24 @@ from .conftest import add_video
 ADMIN={'Authorization':'admin'}
 
 
+def test_tvbox_all_content_provides_two_server_filtered_sources(env):
+    publication=setup(env,roots=['/']);client=env[3]
+    config=client.get(local(publication['links']['tvbox_split'])).json()
+    assert len(client.get(local(publication['links']['tvbox'])).json()['sites'])==1
+    assert len(config['sites'])==2 and config['lives']==[]
+    general,adult=config['sites']
+    assert general['name'].endswith('非成人') and adult['name'].endswith('成人')
+    clean=client.get(local(general['api'])+'?ac=videolist').json()
+    explicit=client.get(local(adult['api'])+'?ac=videolist').json()
+    assert clean['total']==1 and explicit['total']==1
+    assert clean['list'][0]['vod_id']!=explicit['list'][0]['vod_id']
+    assert explicit['list'][0]['type_name']=='成人内容'
+    identifier=explicit['list'][0]['vod_id']
+    assert client.get(local(general['api'])+'?ac=detail&ids='+str(identifier)).json()['total']==0
+    assert client.get(local(general['api'])+'?wd=NSFW').json()['total']==0
+    assert client.get(local(general['api']).rsplit('/',1)[0]+'/unknown').status_code==422
+
+
 def test_bulk_exports_batch_result_and_cover_queries(env,monkeypatch):
     publication=setup(env);db,ol,worker,client=env
     for index in range(205):

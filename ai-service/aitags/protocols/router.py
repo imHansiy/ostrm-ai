@@ -5,6 +5,7 @@ import os
 import posixpath
 import time
 from urllib.parse import urlsplit
+from typing import Literal
 from fastapi import HTTPException,Request
 from fastapi.responses import FileResponse,JSONResponse,RedirectResponse,Response,StreamingResponse
 from pydantic import BaseModel,Field
@@ -166,8 +167,9 @@ def install_media_routes(app,db,ol,admin_auth,worker):
         return Response(output.stdout if request.method=='GET' else b'',media_type='image/jpeg',headers={'Content-Length':str(len(output.stdout))})
 
     @app.get('/media/{identifier}/tvbox.json')
+    @app.get('/media/{identifier}/tvbox-split.json')
     def tvbox(identifier:str,request:Request):
-        return formats.tvbox(catalog,authorized(request,identifier))
+        return formats.tvbox(catalog,authorized(request,identifier),split=request.url.path.endswith('/tvbox-split.json'))
 
     @app.get('/media/{identifier}/libretv.json')
     def libretv(identifier:str,request:Request):
@@ -175,9 +177,13 @@ def install_media_routes(app,db,ol,admin_auth,worker):
 
     @app.get('/media/{identifier}/api.php/provide/vod')
     @app.get('/media/{identifier}/provider/{provider_key}/api.php/provide/vod')
-    def cms(identifier:str,request:Request,provider_key:str|None=None):
+    @app.get('/media/{identifier}/api.php/provide/vod/{content_scope}')
+    @app.get('/media/{identifier}/provider/{provider_key}/api.php/provide/vod/{content_scope}')
+    def cms(identifier:str,request:Request,provider_key:str|None=None,content_scope:Literal['general','adult']|None=None):
         publication=authorized(request,identifier,provider_key)
         items=catalog.items(publication);params=request.query_params
+        if content_scope is not None:
+            items=[item for item in items if item['adult']==(content_scope=='adult')]
         all_classes=formats.cms_classes(items)
         if params.get('wd'):
             words=params['wd'].casefold().split()
