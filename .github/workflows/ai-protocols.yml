@@ -89,6 +89,15 @@ jobs:
         run: |
           docker run -d --name jellyfin-test --network host -v "$PWD/.local/integration/exports:/media-ai:ro" jellyfin/jellyfin:10.11.0
           python tests/integration/check_jellyfin_server.py
+      - name: Capture container diagnostics
+        if: always()
+        run: |
+          mkdir -p .local/integration
+          docker ps -a > .local/integration/docker-state.log
+          for name in app-container ai-container jellyfin-test; do
+            docker logs "$name" > ".local/integration/docker-$name.log" 2>&1 || true
+            docker inspect "$name" --format '{{json .State}}' >> .local/integration/docker-state.log 2>/dev/null || true
+          done
       - name: Retain diagnostic test logs
         if: always()
         uses: actions/upload-artifact@v4

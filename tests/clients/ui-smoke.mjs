@@ -19,6 +19,12 @@ try {
     await page.getByRole('status').filter({hasText:'设置已保存'}).waitFor();
     await page.getByRole('button',{name:'识别资料',exact:true}).click();
     await page.getByText('/videos/blue.2026.mp4',{exact:true}).waitFor();
+    await page.getByRole('button',{name:'标签规则',exact:true}).click();
+    await page.getByRole('heading',{name:'同义标签与常用标签'}).waitFor();
+    await page.getByRole('button',{name:'保存标签规则',exact:true}).click();
+    await page.getByRole('status').filter({hasText:'标签规则已保存'}).waitFor();
+    await page.getByRole('button',{name:'历史与错误日志',exact:true}).click();
+    await page.getByRole('heading',{name:'识别历史与错误日志'}).waitFor();
     await page.getByRole('button',{name:'外部协议与导出',exact:true}).click();
     await page.getByRole('button',{name:'接入信息',exact:true}).first().click();
     await page.locator('input[aria-label="m3u"]').first().waitFor();

@@ -2,7 +2,7 @@
   <main class="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
     <div class="flex flex-wrap items-center justify-between gap-4 mb-7">
       <div><h1 class="text-3xl font-bold text-white">AI 识别与外部协议</h1><p class="mt-2 text-sm text-white/50">理解视频内容，生成媒体资料，交给你的播放器。</p></div>
-      <button class="btn-secondary" :disabled="busy" @click="reload">刷新数据</button>
+      <button class="btn-secondary" :disabled="busy" @click="refreshCurrent">刷新数据</button>
     </div>
     <div v-if="message" role="status" class="mb-5 rounded-xl border border-blue-400/20 bg-blue-400/10 p-4 text-sm text-blue-100">{{ message }}</div>
     <div v-if="error" role="alert" class="mb-5 rounded-xl border border-red-400/20 bg-red-400/10 p-4 text-sm text-red-100">{{ error }}</div>
@@ -56,6 +56,12 @@
       <div class="card p-5"><h2 class="text-lg font-semibold text-white mb-4">资料同步记录</h2><div v-for="job in exportJobs" :key="job.id" class="py-3 border-t border-white/5 text-sm text-white/65"><span>{{ job.state }}</span><pre class="mt-2 text-xs whitespace-pre-wrap break-all text-white/40">{{ job.result }}</pre><button v-if="job.state==='failed'" class="text-blue-300 mt-2 text-xs" @click="sync(job.publication_id)">重新同步</button></div><p v-if="!exportJobs.length" class="text-sm text-white/40">暂无同步记录。</p></div>
     </section>
 
+    <section v-if="tab === 'tags'" class="space-y-6">
+      <form class="card p-6" @submit.prevent="saveTagRules"><h2 class="text-xl font-semibold text-white mb-4">同义标签与常用标签</h2><p class="text-sm text-white/50 mb-5">每行一个「别名=规范标签」。显示与导出使用规范标签；视频的人工修改仍然保留。</p><label class="field">同义标签<textarea v-model="aliasText" rows="8" class="input" placeholder="教程=教学"></textarea></label><label class="field mt-5">常用标签，逗号分隔<input v-model="favoriteText" class="input" placeholder="电影,教学,旅行"></label><button class="btn-primary mt-6" :disabled="busy">保存标签规则</button></form>
+    </section>
+
+    <section v-if="tab === 'history'" class="card p-6"><div class="flex flex-wrap gap-4 items-center justify-between"><div><h2 class="text-xl font-semibold text-white">识别历史与错误日志</h2><p class="text-sm text-white/40 mt-2">最近 100 条记录</p></div><label class="text-sm text-white/60"><input v-model="onlyErrors" type="checkbox"> 只看错误与警告</label></div><div v-for="record in visibleHistory" :key="record.id" class="border-t border-white/10 mt-5 pt-5 text-sm"><div class="flex flex-wrap gap-3 text-white/40"><time>{{ new Date(record.created*1000).toLocaleString() }}</time><span :class="record.state==='failed'?'text-red-300':'text-blue-300'">{{ record.state }}</span></div><p class="mt-3 text-white/70 break-all">{{ record.path }}</p><p class="mt-2 text-white/50 break-all">{{ record.message }}</p></div><p v-if="!visibleHistory.length" class="text-sm text-white/40 mt-6">暂无匹配记录。</p></section>
+
     <dialog ref="detailDialog" class="ai-detail"><div class="flex justify-between items-center gap-4 mb-5"><h2 class="text-xl font-semibold text-white">识别资料</h2><button class="btn-secondary" @click="detailDialog?.close()">关闭</button></div><pre class="whitespace-pre-wrap break-all text-xs leading-7 text-white/70">{{ detail }}</pre></dialog>
     <dialog ref="tagDialog" class="ai-detail"><form @submit.prevent="saveTags"><h2 class="text-xl font-semibold text-white mb-5">人工标签</h2><p class="text-xs text-white/40 mb-4 break-all">{{ editingPath }}</p><label class="field">新增标签，逗号分隔<input v-model="manualTags" class="input"></label><label class="field mt-4">移除的 AI 标签，逗号分隔<input v-model="removedTags" class="input"></label><div class="flex gap-3 mt-6"><button class="btn-primary">保存标签</button><button type="button" class="btn-secondary" @click="tagDialog?.close()">取消</button></div></form></dialog>
   </main>
@@ -65,10 +71,13 @@
 import { authenticatedApiCall } from '~/core/api/client'
 definePageMeta({ middleware: 'auth' })
 type Row = Record<string, any>
-const tabs=[{id:'overview',label:'总览'},{id:'settings',label:'模型与扫描'},{id:'queue',label:'识别任务'},{id:'library',label:'识别资料'},{id:'publications',label:'外部协议与导出'}]
+const tabs=[{id:'overview',label:'总览'},{id:'settings',label:'模型与扫描'},{id:'queue',label:'识别任务'},{id:'library',label:'识别资料'},{id:'publications',label:'外部协议与导出'},{id:'tags',label:'标签规则'},{id:'history',label:'历史与错误日志'}]
 const tab=ref('overview'),busy=ref(false),message=ref(''),error=ref(''),overview=ref<Row>({}),settings=reactive<Row>({}),jobs=ref<Row[]>([])
 const keyConfigured=ref(false),modelKey=ref(''),rootText=ref(''),excludeText=ref(''),extensionText=ref(''),scanText=ref(''),useSubtitles=ref(true)
 const coverBackfill=ref(false)
+const aliasText=ref(''),favoriteText=ref(''),historyRecords=ref<Row[]>([]),onlyErrors=ref(false)
+const visibleHistory=computed(()=>historyRecords.value.filter(row=>!onlyErrors.value||['failed','warning'].includes(row.state)))
+async function refreshCurrent(){if(['tags','history'].includes(tab.value))await changeTab(tab.value);else await reload()}
 const publications=ref<Row[]>([]),exportJobs=ref<Row[]>([]),linkSets=reactive<Record<string,Record<string,string>>>({}),exportDirectory=ref(''),openlistUrl=ref('')
 const publicationForm=reactive({name:'我的视频资料库',public_base_url:'',content:'all',max_items:5000,author:'',owner_email:'',sync_enabled:false}),publicationRoots=ref('')
 const library=ref<Row[]>([]),libraryTotal=ref(0),libraryPage=ref(1),libraryPages=ref(0),query=ref(''),content=ref('all'),selected=ref<string[]>([])
@@ -81,7 +90,8 @@ const tags=(value:string)=>value.split(/[,，]/).map(row=>row.trim()).filter(Boo
 const api=<T=any>(path:string,method='GET',body?:unknown)=>authenticatedApiCall<T>('/ai'+path,{method,body})
 async function operation(action:()=>Promise<void>){busy.value=true;error.value='';message.value='';try{await action()}catch(cause:any){const value=cause?.data?.detail;error.value=Array.isArray(value)?value.map((entry:any)=>entry.msg).join('；'):typeof value==='string'?value:(cause.message||'操作失败，请重试')}finally{busy.value=false}}
 async function reload(){await operation(async()=>{const [stats,data,records,profiles,outputs]=await Promise.all([api('/overview'),api('/settings'),api('/jobs'),api('/exports/publications'),api('/exports/jobs')]);overview.value=stats;coverBackfill.value=Boolean(data.cover_backfill);Object.assign(settings,data.settings);keyConfigured.value=data.model_key_configured;rootText.value=(settings.roots||[]).join('\n');excludeText.value=(settings.exclude||[]).join('\n');extensionText.value=(settings.extensions||[]).join(',');if(!scanText.value)scanText.value=rootText.value;if(!publicationRoots.value)publicationRoots.value=rootText.value;publications.value=profiles.items;exportDirectory.value=profiles.export_directory;openlistUrl.value=profiles.openlist_url;exportJobs.value=outputs;jobs.value=records})}
-async function changeTab(value:string){tab.value=value;error.value='';message.value='';if(value==='library')await loadLibrary(1);else if(value==='queue'||value==='publications')await refreshQueues()}
+async function changeTab(value:string){tab.value=value;error.value='';message.value='';if(value==='library')await loadLibrary(1);else if(value==='queue'||value==='publications')await refreshQueues();else if(value==='tags')await operation(async()=>{const data=await api('/tags');aliasText.value=data.aliases.map((row:Row)=>row.alias+'='+row.canonical).join('\n');favoriteText.value=data.favorites.join(',')});else if(value==='history')await operation(async()=>{historyRecords.value=await api('/history')})}
+async function saveTagRules(){await operation(async()=>{const aliases=lines(aliasText.value).map(value=>{const index=value.indexOf('=');if(index<1||index===value.length-1)throw Error('每行需要填写「别名=规范标签」');return {alias:value.slice(0,index).trim(),canonical:value.slice(index+1).trim()}});await api('/tags','PUT',{aliases,favorites:tags(favoriteText.value)});message.value='标签规则已保存'})}
 async function refreshQueues(){try{const [tasks,profiles,outputs]=await Promise.all([api('/jobs'),api('/exports/publications'),api('/exports/jobs')]);jobs.value=tasks;publications.value=profiles.items;exportJobs.value=outputs}catch(cause:any){error.value=cause?.data?.detail||'数据暂时无法刷新'}}
 async function saveSettings(){await operation(async()=>{await api('/settings','PUT',{...settings,roots:lines(rootText.value),exclude:lines(excludeText.value),extensions:tags(extensionText.value)});await api('/library/covers','PUT',{enabled:coverBackfill.value});message.value='设置已保存'})}
 async function saveKey(){await operation(async()=>{await api('/model/key','PUT',{key:modelKey.value});modelKey.value='';keyConfigured.value=true;message.value='模型密钥已更新'})}
