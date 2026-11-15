@@ -122,7 +122,7 @@ def create_app(db=None, ol=None, background=True):
         catalog.close()
         ol.close()
 
-    app = FastAPI(title='OStrm AI 识别与外部协议',version='0.2.0',lifespan=lifespan,docs_url=None,redoc_url=None)
+    app = FastAPI(title='OStrm AI 识别与外部协议',version='0.3.0',lifespan=lifespan,docs_url=None,redoc_url=None)
     app.state.db, app.state.ol, app.state.worker = db,ol,worker
     app.state.catalog = catalog
 
@@ -216,7 +216,8 @@ def create_app(db=None, ol=None, background=True):
 
     @app.get('/ai/health')
     def health():
-        return {'status':'ok','version':'0.2.0','database':db.backend}
+        return {'status':'ok','version':'0.3.0','database':db.backend,
+                'worker_enabled':background,'worker_running':bool(worker.threads) and all(thread.is_alive() for thread in worker.threads)}
 
     @app.get('/ai/exports',include_in_schema=False)
     def export_page():
@@ -544,9 +545,13 @@ def create_app(db=None, ol=None, background=True):
     def jobs(request:Request):
         auth(request,True)
         rows=db.all('SELECT * FROM runs ORDER BY id DESC LIMIT 100')
-        for row in rows:
-            row['tasks']={r['state']:r['n'] for r in db.all('SELECT state,count(*) n FROM tasks WHERE run_id=? GROUP BY state',(row['id'],))}
-            row['directories']={r['state']:r['n'] for r in db.all('SELECT state,count(*) n FROM directories WHERE run_id=? GROUP BY state',(row['id'],))}
+        if not rows:return rows
+        by_id={row['id']:row for row in rows}
+        placeholders=','.join('?' for _ in rows)
+        for table in ('tasks','directories'):
+            for row in rows:row[table]={}
+            for count in db.all(f'SELECT run_id,state,COUNT(*) n FROM {table} WHERE run_id IN ({placeholders}) GROUP BY run_id,state',tuple(by_id)):
+                by_id[count['run_id']][table][count['state']]=count['n']
         return rows
 
     @app.post('/ai/api/jobs/{rid}/{action}')

@@ -6,6 +6,7 @@
  */
 
 import { defineStore } from 'pinia'
+import { resolveApiPath } from '~/core/utils/paths'
 
 /**
  * 版本信息类型
@@ -105,7 +106,7 @@ export const useVersionStore = defineStore('version', {
         const config = useRuntimeConfig()
         const currentVersion = (config.public.appVersion as string) || 'dev'
 
-        const response = await $fetch<VersionCheckResponse>('/api/version/check', {
+        const response = await $fetch<VersionCheckResponse>(resolveApiPath('/version/check'), {
           method: 'GET',
           params: {
             currentVersion

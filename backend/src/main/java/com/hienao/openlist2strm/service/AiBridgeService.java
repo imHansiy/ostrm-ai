@@ -61,7 +61,7 @@ public class AiBridgeService {
             + "scan|recognize|jobs|jobs/[0-9]+/(?:pause|resume|cancel|retry)|"
             + "model/(?:test|key)|videos/(?:batch|edit)|tags|history|"
             + "exports/(?:publications(?:/[a-f0-9]{32}/(?:links|preview|sync|rotate|revoke))?|jobs)|"
-            + "ostrm/metadata)");
+            + "ostrm/(?:metadata|session))");
   }
 
   public ResponseEntity<byte[]> call(String path, HttpMethod method, byte[] body) {

@@ -162,6 +162,13 @@ public class OpenlistConfigService {
       throw new BusinessException("配置不存在，ID: " + config.getId());
     }
 
+    if (!StringUtils.hasText(config.getToken())) {
+      if (!existingConfig.getBaseUrl().equals(config.getBaseUrl())) {
+        throw new BusinessException("修改 OpenList 地址时需要重新输入 Token");
+      }
+      config.setToken(existingConfig.getToken());
+    }
+
     if (config.getFsApiQpmLimit() == null) {
       config.setFsApiQpmLimit(existingConfig.getFsApiQpmLimit());
     }

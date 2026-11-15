@@ -7,6 +7,7 @@ on:
       - 'backend/**'
       - 'frontend/**'
       - 'tests/**'
+      - 'deploy/**'
       - 'Dockerfile'
       - 'Caddyfile'
       - '.dockerignore'
@@ -87,6 +88,18 @@ jobs:
           python tests/integration/ui_gateway.py > .local/integration/gateway.log 2>&1 &
           cd tests/clients
           npm run ui
+      - name: Test same-domain subpath and OpenList administrator SSO
+        run: |
+          cd frontend
+          NUXT_APP_BASE_URL=/ostrm/ NUXT_PUBLIC_API_BASE=/ostrm/api npm run generate
+          cd ..
+          TEST_APP_PREFIX=/ostrm UI_GATEWAY_PORT=18792 python tests/integration/ui_gateway.py > .local/integration/prefix-gateway.log 2>&1 &
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:18792/ostrm/ > /dev/null; then break; fi
+            sleep 1
+          done
+          cd tests/clients
+          TEST_APP_PREFIX=/ostrm UI_URL=http://127.0.0.1:18792/ostrm/ai-center USE_OPENLIST_SSO=1 npm run ui
       - name: Import into actual Jellyfin server
         run: |
           docker run -d --name jellyfin-test --network host -v "$PWD/.local/integration/exports:/media-ai:ro" jellyfin/jellyfin:10.11.0

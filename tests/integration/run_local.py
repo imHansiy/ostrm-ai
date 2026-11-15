@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[2]
-STATE=ROOT/'.local'/'integration';STATE.mkdir(parents=True,exist_ok=True)
+STATE=Path(os.getenv('TEST_STATE_DIR',str(ROOT/'.local'/'integration')));STATE.mkdir(parents=True,exist_ok=True)
 JAVA=os.path.join(os.getenv('JAVA_HOME',''), 'bin','java.exe' if os.name=='nt' else 'java') if os.getenv('JAVA_HOME') else 'java'
 
 def main():

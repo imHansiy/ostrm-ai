@@ -39,6 +39,7 @@ public class WebSecurityConfig {
     return new OrRequestMatcher(
         // API 认证端点（统一使用 /api 前缀）
         new AntPathRequestMatcher("/api/auth/sign-in", HttpMethod.POST.name()),
+        new AntPathRequestMatcher("/api/auth/openlist-session", HttpMethod.POST.name()),
         new AntPathRequestMatcher("/api/auth/sign-up", HttpMethod.POST.name()),
         new AntPathRequestMatcher("/api/auth/check-user", HttpMethod.GET.name()),
         // 版本检查接口（无需认证）

@@ -24,6 +24,7 @@ export default defineNuxtConfig({
   // SPA 模式配置
   ssr: false,
   srcDir: 'app',
+  app: { baseURL: process.env.NUXT_APP_BASE_URL || '/' },
 
   // 路由配置 - Nuxt 4 风格
   future: {
@@ -83,7 +84,7 @@ export default defineNuxtConfig({
   // 运行时配置
   runtimeConfig: {
     public: {
-      apiBase: '/api',
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || '/api',
       appVersion: process.env.NUXT_PUBLIC_APP_VERSION || 'dev'
     }
   },

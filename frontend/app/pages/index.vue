@@ -319,7 +319,7 @@
 
               <div>
                 <label for="editToken" class="block text-sm font-medium text-white/70 mb-2">Token</label>
-                <input id="editToken" v-model="configForm.token" type="password" required class="input-field" placeholder="您的 OpenList Token" :disabled="formLoading" />
+                <input id="editToken" v-model="configForm.token" type="password" class="input-field" placeholder="已配置的 Token 不回显；留空保留" :disabled="formLoading" />
               </div>
 
               <div>
@@ -467,7 +467,7 @@ const editConfig = (config) => {
   currentConfig.value = config
   configForm.value = {
     baseUrl: config.baseUrl,
-    token: config.token,
+    token: '',
     strmBaseUrl: config.strmBaseUrl || '',
     enableUrlEncoding: config.enableUrlEncoding !== false,
     fsApiQpmLimit: config.fsApiQpmLimit || 0,
@@ -480,7 +480,9 @@ const updateConfig = async () => {
   formLoading.value = true
   formError.value = ''
   try {
-    const validationResult = await validateOpenListConfig(configForm.value.baseUrl, configForm.value.token)
+    const validationResult = configForm.value.token
+      ? await validateOpenListConfig(configForm.value.baseUrl, configForm.value.token)
+      : { username: currentConfig.value.username, basePath: currentConfig.value.basePath || '/' }
     const response = await authenticatedApiCall(`/openlist-config/${currentConfig.value.id}`, {
       method: 'PUT',
       body: { ...configForm.value, ...validationResult }

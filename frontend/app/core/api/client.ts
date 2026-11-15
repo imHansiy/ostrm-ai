@@ -4,6 +4,7 @@
  */
 
 import { useAuthStore } from '~/core/stores/auth'
+import { resolveApiPath, resolveAppPath } from '~/core/utils/paths'
 
 // API 基础配置
 const API_BASE_URL = '/'
@@ -42,6 +43,7 @@ const getToken = (): string | null => {
 
 // 请求拦截器
 const onRequest = (context: { request: string; options: { method?: string; headers?: Record<string, string> } }) => {
+  context.request = resolveApiPath(context.request)
   const token = getToken()
   
   // 构建新的 headers 对象（合并现有 headers 和认证 headers）
@@ -90,7 +92,7 @@ const handleUnauthorized = (): Promise<void> => {
     }
 
     // 尝试刷新 Token（必须携带当前 token）
-    $fetch('/api/auth/refresh', { 
+    $fetch(resolveApiPath('/auth/refresh'), {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`
@@ -140,7 +142,7 @@ const onResponseError = async (context: { response: { status: number; statusText
       if (import.meta.client) {
         const authStore = useAuthStore()
         authStore.logout()
-        window.location.href = '/auth/login'
+        window.location.href = resolveAppPath('/auth/login')
       }
       throw new Error('登录已过期，请重新登录')
     }
@@ -168,7 +170,7 @@ const onResponseError = async (context: { response: { status: number; statusText
       if (import.meta.client) {
         const authStore = useAuthStore()
         authStore.logout()
-        window.location.href = '/auth/login'
+        window.location.href = resolveAppPath('/auth/login')
       }
       throw new Error('登录已过期，请重新登录')
     }
@@ -261,7 +263,7 @@ export const authenticatedApiCall = async <T = any>(
   const { method = 'GET', body, headers } = options
 
   // 确保 URL 以 /api 开头（Docker 生产环境需要）
-  const apiUrl = url.startsWith('/api') ? url : `/api${url.startsWith('/') ? url : '/' + url}`
+  const apiUrl = resolveApiPath(url)
 
   // 使用 $fetchApi，拦截器会自动添加 Authorization header
   return await $fetchApi<T>(apiUrl, {
@@ -283,7 +285,7 @@ export const apiCall = async <T = any>(
   const { method = 'GET', body, headers } = options
 
   // 确保 URL 以 /api 开头（Docker 生产环境需要）
-  const apiUrl = url.startsWith('/api') ? url : `/api${url.startsWith('/') ? url : '/' + url}`
+  const apiUrl = resolveApiPath(url)
 
   return await $fetch<T>(apiUrl, {
     method,

@@ -1,5 +1,6 @@
 package com.hienao.openlist2strm.dto.openlist;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -27,7 +28,12 @@ public class OpenlistConfigDto {
   private String baseUrl;
 
   /** 用户令牌 */
-  @NotBlank(message = "用户令牌不能为空") @Size(max = 1000, message = "用户令牌长度不能超过1000个字符") private String token;
+  @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+  @Size(max = 1000, message = "用户令牌长度不能超过1000个字符") private String token;
+
+  public boolean isTokenConfigured() {
+    return token != null && !token.isBlank();
+  }
 
   /** 初始路径 */
   @Size(max = 500, message = "初始路径长度不能超过500个字符") private String basePath;

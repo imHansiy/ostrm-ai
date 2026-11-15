@@ -36,6 +36,12 @@ def main():
         assert registered.status_code==201,registered.text
     response=client.post(APP+'/api/auth/sign-in',json={'username':'protocol-test','password':'Fixture-Only-2026!'})
     response.raise_for_status();token=response.json()['data']['token'];headers={'Authorization':'Bearer '+token}
+    exchanged=client.post(APP+'/api/auth/openlist-session',json={'token':'fixture-admin'})
+    assert exchanged.status_code==200,exchanged.text
+    assert exchanged.json()['data']['username']=='protocol-test'
+    assert exchanged.json()['data']['token']!='fixture-admin'
+    assert client.post(APP+'/api/auth/openlist-session',json={'token':'fixture-limited'}).status_code==403
+    assert client.post(APP+'/api/auth/openlist-session',json={'token':'expired'}).status_code==401
     def api(method,path,**kwargs):
         result=client.request(method,APP+'/api/ai'+path,headers=headers,**kwargs)
         assert result.is_success,(path,result.status_code,result.text[:500])

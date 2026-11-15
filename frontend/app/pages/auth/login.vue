@@ -33,7 +33,7 @@
         <!-- Logo和标题 -->
         <div class="text-center mb-8">
           <img
-            src="/logo.svg"
+            :src="resolveAppPath('/logo.svg')"
             alt="Ostrm"
             class="w-16 h-16 rounded-2xl mx-auto mb-5 shadow-lg shadow-blue-900/20"
           />

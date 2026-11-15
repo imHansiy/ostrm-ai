@@ -5,6 +5,10 @@
   window.__openlistAITags = true;
   const asset = new URL(document.currentScript?.src || '/ai/assets/ai.js', location.href);
   const base = asset.pathname.replace(/\/assets\/ai\.js$/, '');
+  const configuredApp=document.currentScript?.dataset.ostrmBase || '';
+  const ostrmBase=configuredApp.startsWith('/') && !configuredApp.startsWith('//') ? configuredApp.replace(/\/+$/,'') : '';
+  const ostrmTab=tab=>({jobs:'queue',overview:'overview',library:'library',settings:'settings',tags:'tags',history:'history',publications:'publications'}[tab] || 'overview');
+  const ostrmLocation=tab=>`${ostrmBase}/ai-center?${new URLSearchParams({tab:ostrmTab(tab)})}`;
   const css = document.createElement('link');
   css.rel = 'stylesheet'; css.href = `${base}/assets/ai.css`; document.head.append(css);
   const state = { admin: false, cache: new Map(), context: null, token: null, userName: null, error: '', refreshed: 0 };
@@ -111,7 +115,7 @@
   const managePath = () => /^\/@manage(?:\/|$)/.test(location.pathname);
   let initialCatalog=null;
   const initialParams=new URLSearchParams(location.search);
-  if(managePath() && initialParams.get('ai')==='video-tags' && ['library','overview'].includes(initialParams.get('view') || 'library') &&
+  if(!ostrmBase && managePath() && initialParams.get('ai')==='video-tags' && ['library','overview'].includes(initialParams.get('view') || 'library') &&
      localStorage.getItem('token')){
     // Prefetch one bounded batch; the mounted grid chooses how many fill its rows.
     const body=JSON.stringify({keywords:'',tags:[],category:'',year:'',sort:'newest',content:'all',password:password(),page:1,page_size:60});
@@ -120,9 +124,11 @@
   }
   const manageTabs = {library:'识别资料',settings:'模型与扫描配置',jobs:'识别任务',tags:'标签规则',history:'历史与错误日志'};
   function manageLocation(tab='settings') {
+    if(ostrmBase)return ostrmLocation(tab);
     return `/@manage?${new URLSearchParams({ai:'video-tags',view:tab})}`;
   }
   function openManage(tab='settings') {
+    if(ostrmBase){location.assign(ostrmLocation(tab));return;}
     state.manageExpanded=true;
     window.history.pushState({},'',manageLocation(tab));
     window.dispatchEvent(new PopStateEvent('popstate'));
@@ -161,6 +167,22 @@
     });
   }
   async function ensureManage() {
+    if(ostrmBase){
+      if(managePath() && new URLSearchParams(location.search).get('ai')==='video-tags'){
+        location.replace(ostrmLocation(new URLSearchParams(location.search).get('view')));return;
+      }
+      if(managePath() && state.admin){
+        for(const profile of document.querySelectorAll('a[href="/@manage/profile"]')){
+          const menu=profile.parentElement;
+          if(menu.querySelector('.ai-ostrm-entry'))continue;
+          const link=el('a',null,`${profile.className} ai-ostrm-entry`);link.href=ostrmLocation('overview');
+          link.append(icon('film'),el('span','AI 识别与协议'));
+          link.addEventListener('click',event=>{if(!event.ctrlKey&&!event.metaKey){event.preventDefault();location.assign(link.href);}});
+          menu.append(link);
+        }
+      }
+      return;
+    }
     if(!managePath() || !state.admin) {
       clearManagePanel();
       restoreManageNavigation();
@@ -1105,7 +1127,7 @@
     if(managePath() || document.querySelector('#ai-cinema-link'))return;
     const actions=document.querySelector('.header .header-right');
     if(!actions)return;
-    const link=el('a',null,'ai-cinema-entry');link.id='ai-cinema-link';link.href='/ai/exports';
+    const link=el('a',null,'ai-cinema-entry');link.id='ai-cinema-link';link.href=ostrmBase ? ostrmLocation('overview') : '/ai/exports';
     link.setAttribute('aria-label','打开 AI 资料与协议');link.title='AI 资料与协议';
     link.addEventListener('click',event=>{
       if(event.ctrlKey||event.metaKey||event.shiftKey||event.altKey||event.button!==0)return;

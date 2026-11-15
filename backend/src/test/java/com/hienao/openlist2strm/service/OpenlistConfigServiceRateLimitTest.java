@@ -1,6 +1,7 @@
 package com.hienao.openlist2strm.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -46,5 +47,29 @@ class OpenlistConfigServiceRateLimitTest {
         .setBaseUrl("https://openlist.example.com")
         .setToken("token")
         .setUsername("user");
+  }
+
+  @Test
+  void maskedTokenIsPreservedWhenEditingSameSource() {
+    OpenlistConfigMapper mapper = mock(OpenlistConfigMapper.class);
+    OpenlistConfigService service = new OpenlistConfigService(mapper);
+    OpenlistConfig existing = validConfig().setId(1L);
+    OpenlistConfig update = validConfig().setId(1L).setToken("");
+    when(mapper.selectById(1L)).thenReturn(existing);
+    when(mapper.updateById(update)).thenReturn(1);
+    service.updateConfig(update);
+    assertEquals("token", update.getToken());
+  }
+
+  @Test
+  void maskedTokenCannotBeForwardedToAnotherHost() {
+    OpenlistConfigMapper mapper = mock(OpenlistConfigMapper.class);
+    OpenlistConfigService service = new OpenlistConfigService(mapper);
+    when(mapper.selectById(1L)).thenReturn(validConfig().setId(1L));
+    OpenlistConfig update =
+        validConfig().setId(1L).setToken("").setBaseUrl("https://another.example.com");
+    assertThrows(
+        com.hienao.openlist2strm.exception.BusinessException.class,
+        () -> service.updateConfig(update));
   }
 }

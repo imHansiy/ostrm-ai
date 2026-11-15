@@ -25,10 +25,24 @@ class OStrmTarget(BaseModel):
     enqueue: bool=True
 
 
+class OpenListSession(BaseModel):
+    token: str=Field(min_length=1,max_length=4096)
+
+
 def install_media_routes(app,db,ol,admin_auth,worker):
     catalog=MediaCatalog(db,ol);publisher=Publisher(catalog)
     app.state.media=catalog;app.state.publisher=publisher
     worker.on_result=publisher.publish_path
+
+    @app.post('/ai/api/ostrm/session')
+    def openlist_session(body:OpenListSession,request:Request):
+        import hmac
+        expected=os.getenv('AI_BRIDGE_KEY','')
+        supplied=request.headers.get('x-ai-bridge','')
+        if not expected or not hmac.compare_digest(expected,supplied):raise HTTPException(403,'此接口仅供服务端登录桥接使用')
+        user=ol.me(body.token)
+        if user.get('role')!=2:raise HTTPException(403,'仅 OpenList 管理员可登录 OStrm AI')
+        return {'username':user.get('username') or 'admin','role':2}
 
     def authorized(request,identifier,path_key=None):
         key=path_key or request.query_params.get('key','')

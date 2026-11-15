@@ -8,7 +8,7 @@
 
 ## 功能
 
-- 在线 MiniCPM-V 4.7 1B / 35B-A3B；兼容的自托管推理服务也可使用。Docker 运行应用，**不安装本地模型、不要求 GPU**。
+- 在线 MiniCPM-V 4.7 1B / 35B-A3B；兼容的自托管推理服务也可使用。支持 Docker 或 FreeBSD 原生运行，**不安装本地模型、不要求 GPU**。
 - 读取真实视频，将完整时间轴压缩为 MP4 后发送给模型；支持字幕证据、受限的补充证据帧、缓存与重新识别。不是只看文件名生成标签。
 - 中文摘要、内容标签、画面文字、人物和关系观察。AI 推测人物不冒充真实演员署名；文件名年份有明确来源。
 - 持久化扫描、暂停/恢复/取消/重试、重启恢复；人工标签与 AI 标签分开保存。
@@ -42,6 +42,8 @@
 </details>
 
 ## 安装：完整 OStrm AI
+
+FreeBSD / Serv00 无 Docker 环境见 [原生安装、同域名路由与旧插件迁移](docs/FREEBSD_NATIVE.md)。完整 Java + Nuxt + Python 应用可以放在现有 OpenList 同域名的 `/ostrm/`，旧 `/media/` 订阅链接可保持不变。
 
 适合 Linux NAS/VPS，安装 Docker Engine 与 Compose 插件即可。先有一个能够正常访问视频的 OpenList。
 

@@ -7,9 +7,11 @@ const directory=process.env.SCREENSHOT_DIR||'../../.local/integration/screenshot
 try {
   for(const mobile of [false,true]) {
     const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:1000},deviceScaleFactor:1});
-    await context.addInitScript(({token})=>{localStorage.setItem('auth_storage_type','local');localStorage.setItem('auth_token',token);localStorage.setItem('auth_userInfo',JSON.stringify({username:'protocol-test'}));},fixture);
+    if(process.env.USE_OPENLIST_SSO==='1') await context.addInitScript(()=>localStorage.setItem('token','fixture-admin'));
+    else await context.addInitScript(({token})=>{localStorage.setItem('auth_storage_type','local');localStorage.setItem('auth_token',token);localStorage.setItem('auth_userInfo',JSON.stringify({username:'protocol-test'}));},fixture);
     const page=await context.newPage();const failures=[];
     page.on('pageerror',error=>failures.push(error.message));
+    page.on('request',request=>{if(process.env.TEST_APP_PREFIX && new URL(request.url()).pathname.startsWith('/api/'))failures.push('Unprefixed API request')});
     page.on('response',response=>{if(response.url().includes('/api/ai/')&&response.status()>=400)failures.push('API '+response.status()+' '+new URL(response.url()).pathname)});
     await page.goto(process.env.UI_URL||'http://127.0.0.1:18790/ai-center');
     await page.getByRole('heading',{name:'AI 识别与外部协议',exact:true}).waitFor();

@@ -71,6 +71,7 @@
 import { authenticatedApiCall } from '~/core/api/client'
 definePageMeta({ middleware: 'auth' })
 type Row = Record<string, any>
+const route=useRoute()
 const tabs=[{id:'overview',label:'总览'},{id:'settings',label:'模型与扫描'},{id:'queue',label:'识别任务'},{id:'library',label:'识别资料'},{id:'publications',label:'外部协议与导出'},{id:'tags',label:'标签规则'},{id:'history',label:'历史与错误日志'}]
 const tab=ref('overview'),busy=ref(false),message=ref(''),error=ref(''),overview=ref<Row>({}),settings=reactive<Row>({}),jobs=ref<Row[]>([])
 const keyConfigured=ref(false),modelKey=ref(''),rootText=ref(''),excludeText=ref(''),extensionText=ref(''),scanText=ref(''),useSubtitles=ref(true)
@@ -113,7 +114,7 @@ async function saveTags(){await operation(async()=>{await api('/videos/edit','PO
 async function copy(value:string){try{await navigator.clipboard.writeText(value);message.value='已复制'}catch{message.value='请选中字段内容后复制'}}
 function selectText(event:FocusEvent){(event.target as HTMLInputElement)?.select()}
 let timer:ReturnType<typeof setInterval>|undefined
-onMounted(()=>{publicationForm.public_base_url=window.location.origin;reload();timer=setInterval(()=>{if(!document.hidden&&!busy.value&&(tab.value==='queue'||tab.value==='publications'))refreshQueues()},5000)})
+onMounted(async()=>{publicationForm.public_base_url=window.location.origin;await reload();const requested=String(route.query.tab||'');if(tabs.some(entry=>entry.id===requested))await changeTab(requested);timer=setInterval(()=>{if(!document.hidden&&!busy.value&&(tab.value==='queue'||tab.value==='publications'))refreshQueues()},5000)})
 onBeforeUnmount(()=>{if(timer)clearInterval(timer)})
 </script>
 

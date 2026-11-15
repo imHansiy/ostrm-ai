@@ -11,3 +11,11 @@ logs/
 .vscode/
 .agent/
 .local/
+__pycache__/
+*.pyc
+.venv/
+/runtime/
+/public/
+/openlisttostrm.jar
+/*.whl
+/native-runtime.tar.gz

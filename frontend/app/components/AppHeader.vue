@@ -37,7 +37,7 @@
           <!-- Logo -->
           <NuxtLink to="/" class="flex items-center gap-3 group">
             <img
-              src="/logo.svg"
+              :src="resolveAppPath('/logo.svg')"
               alt="Ostrm"
               class="w-9 h-9 rounded-xl shadow-lg shadow-blue-900/20 group-hover:shadow-blue-900/40 transition-shadow"
             />

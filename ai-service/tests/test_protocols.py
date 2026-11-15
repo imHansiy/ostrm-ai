@@ -15,6 +15,20 @@ from .conftest import add_video
 ADMIN={'Authorization':'admin'}
 
 
+def test_openlist_login_exchange_requires_private_bridge_and_real_admin(env,monkeypatch):
+    client=env[3];monkeypatch.setenv('AI_BRIDGE_KEY','server-only-test-key')
+    endpoint='/ai/api/ostrm/session'
+    assert client.post(endpoint,json={'token':'admin'}).status_code==403
+    assert client.post(endpoint,headers={'X-AI-Bridge':'wrong'},json={'token':'admin'}).status_code==403
+    headers={'X-AI-Bridge':'server-only-test-key'}
+    assert client.post(endpoint,headers=headers,json={'token':'limited','role':2}).status_code==403
+    assert client.post(endpoint,headers=headers,json={'token':'bad'}).status_code==401
+    result=client.post(endpoint,headers=headers,json={'token':'admin'})
+    assert result.status_code==200 and result.json()=={'username':'admin','role':2}
+    monkeypatch.setenv('AI_BRIDGE_KEY','')
+    assert client.post(endpoint,headers=headers,json={'token':'admin'}).status_code==403
+
+
 def test_tvbox_all_content_provides_two_server_filtered_sources(env):
     publication=setup(env,roots=['/']);client=env[3]
     config=client.get(local(publication['links']['tvbox_split'])).json()

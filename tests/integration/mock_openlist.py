@@ -40,7 +40,11 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command!='HEAD':self.wfile.write(video[start:end+1])
         elif self.path=='/test/stats':self.json(stats)
-        elif self.path.startswith('/api/me'):self.json({'code':200,'data':{'username':'admin','role':2,'base_path':'/'}})
+        elif self.path.startswith('/api/me'):
+            token=self.headers.get('Authorization','')
+            if token=='fixture-admin':self.json({'code':200,'data':{'username':'protocol-test','role':2,'base_path':'/'}})
+            elif token=='fixture-limited':self.json({'code':200,'data':{'username':'limited','role':0,'base_path':'/videos'}})
+            else:self.json({'code':401,'message':'expired'},401)
         else:self.json({'code':404,'message':'not found'},404)
     def do_POST(self):
         body=json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))) or b'{}')
