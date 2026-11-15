@@ -6,7 +6,8 @@
  * @date 2026-01-31
  */
 
-import { apiCall } from '~/core/utils/api'
+import { authenticatedApiCall as apiCall } from '~/core/api/client'
+import { useAuthStore } from '~/core/stores/auth'
 
 /**
  * 日志级别类型
@@ -102,12 +103,14 @@ class Logger {
         sessionId: this.getSessionId()
       }))
       
-      if (sync && navigator.sendBeacon) {
+      const token = useAuthStore().getToken
+      if (!token) return
+      if (sync) {
         // 同步发送（页面卸载时）
         const data = JSON.stringify({ logs: enrichedLogs })
-        navigator.sendBeacon('/api/logs/frontend', data)
+        await fetch('/api/logs/frontend', { method: 'POST', keepalive: true, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: data })
       } else {
-        // 异步发送 - 使用apiCall而不是authenticatedApiCall，因为日志API不需要认证
+        // 日志仅对登录管理员开放，避免暴露私有媒体访问地址。
         // API路径为'/logs/frontend'
         await apiCall('/logs/frontend', {
           method: 'POST',

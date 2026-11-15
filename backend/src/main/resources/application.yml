@@ -11,6 +11,11 @@ app:
 
 server:
   port: 8080
+ai:
+  service:
+    url: ${AI_SERVICE_URL:}
+    bridge-key: ${AI_BRIDGE_KEY:}
+    auto-enqueue: ${AI_AUTO_ENQUEUE:false}
 logging:
   file:
     path: ${app.paths.logs}

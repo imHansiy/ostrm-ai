@@ -43,10 +43,6 @@ public class WebSecurityConfig {
         new AntPathRequestMatcher("/api/auth/check-user", HttpMethod.GET.name()),
         // 版本检查接口（无需认证）
         new AntPathRequestMatcher("/api/version/**"),
-        // 测试接口（无需认证）
-        new AntPathRequestMatcher("/api/test/**"),
-        // 日志接口（无需认证）
-        new AntPathRequestMatcher("/api/logs/**"),
         // WebSocket 连接（无需认证）
         new AntPathRequestMatcher("/ws/**"),
         // 其他公开端点

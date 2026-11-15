@@ -215,7 +215,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { DynamicScroller, DynamicScrollerItem } from 'vue-virtual-scroller'
 import 'vue-virtual-scroller/dist/vue-virtual-scroller.css'
-import { apiCall } from '~/core/api/client'
+import { authenticatedApiCall as apiCall } from '~/core/api/client'
+import { useAuthStore } from '~/core/stores/auth'
 import logger from '~/core/utils/logger'
 
 definePageMeta({
@@ -467,7 +468,7 @@ const copyLog = async (text: string) => {
 const downloadLogs = async () => {
   downloading.value = true
   try {
-    const response = await fetch(`/api/logs/${selectedLogType.value}/download`)
+    const response = await fetch(`/api/logs/${selectedLogType.value}/download`, { headers: { Authorization: `Bearer ${useAuthStore().getToken || ''}` } })
     if (!response.ok) throw new Error('下载失败')
     const blob = await response.blob()
     const objectUrl = URL.createObjectURL(blob)

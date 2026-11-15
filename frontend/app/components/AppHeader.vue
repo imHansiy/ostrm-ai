@@ -83,6 +83,7 @@
 
         <!-- 右侧操作按钮 -->
         <div class="hidden lg:flex items-center gap-2">
+          <NuxtLink to="/ai-center" class="btn-secondary text-sm" aria-label="AI 识别与外部协议">AI 识别与协议</NuxtLink>
           <!-- 日志按钮 -->
           <button
             @click="openLogs"
@@ -170,6 +171,7 @@
       <div v-if="showMobileMenu" class="lg:hidden py-4 border-t border-white/6 mt-2 animate-slide-down">
         <div class="space-y-1">
           <!-- 日志 -->
+          <NuxtLink to="/ai-center" class="block px-4 py-3 text-blue-200 hover:bg-white/5" @click="showMobileMenu = false">AI 识别与协议</NuxtLink>
           <button
             @click="handleMobileAction(openLogs)"
             class="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-white/5 transition-colors text-left"

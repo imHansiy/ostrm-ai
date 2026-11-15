@@ -2,6 +2,15 @@
     log {
         output file /var/log/caddy/access.log
         level INFO
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+                request>headers>Authorization delete
+                request>headers>X-Emby-Token delete
+                request>headers>X-MediaBrowser-Token delete
+            }
+        }
     }
     admin off
 }
@@ -13,6 +22,7 @@
     # SPA 路由处理 - 将所有非 API、非静态资源的请求重写到 index.html
     @spa {
         not path /api/*
+        not path /media/*
         not path /ws/*
         not path /health
         not path /_nuxt/*
@@ -32,6 +42,13 @@
     }
 
     # API 代理配置
+    reverse_proxy /media/* ai:8787 {
+        transport http {
+            dial_timeout 10s
+            read_timeout 200s
+        }
+    }
+
     reverse_proxy /api/* localhost:8080 {
         header_up Host {http.reverse_proxy.upstream.hostport}
         header_up X-Real-IP {http.request.remote_host}
@@ -43,7 +60,7 @@
         # 超时配置
         transport http {
             dial_timeout 30s
-            read_timeout 30s
+            read_timeout 210s
             write_timeout 30s
         }
     }

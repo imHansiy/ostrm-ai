@@ -1,0 +1,68 @@
+name: AI protocols and external clients
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -e './ai-service[test,tidb]'
+      - run: python -m pytest ai-service/tests -q
+      - run: chmod +x gradlew && ./gradlew test spotlessCheck bootJar --no-daemon --no-configuration-cache
+        working-directory: backend
+      - run: npm ci --no-audit --no-fund && npm run generate
+        working-directory: frontend
+      - run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
+        working-directory: tests/clients
+      - name: Build deployable AI image
+        run: docker build -t ostrm-ai-worker:ci ai-service
+      - name: Build complete OStrm AI application
+        run: docker build -t ostrm-ai-app:ci .
+      - name: Validate Caddy production routing
+        run: docker run --rm -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 caddy validate --config /etc/caddy/Caddyfile
+      - name: Start isolated Java and AI stack
+        run: |
+          mkdir -p .local/integration
+          python tests/integration/run_local.py --keep > .local/integration/runner.log 2>&1 &
+          for attempt in $(seq 1 360); do
+            if test -f .local/integration/client.json; then exit 0; fi
+            sleep 1
+          done
+          cat .local/integration/runner.log
+          exit 1
+      - run: npm run sdk
+        working-directory: tests/clients
+      - name: Test Nuxt desktop and mobile
+        run: |
+          python tests/integration/ui_gateway.py > .local/integration/gateway.log 2>&1 &
+          cd tests/clients
+          npm run ui
+      - name: Import into actual Jellyfin server
+        run: |
+          docker run -d --name jellyfin-test --network host -v "$PWD/.local/integration/exports:/media-ai:ro" jellyfin/jellyfin:10.11.0
+          python tests/integration/check_jellyfin_server.py
+      - name: Retain diagnostic test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-reports
+          path: |
+            .local/integration/*.log
+            .local/integration/screenshots/
+            backend/build/reports/tests/

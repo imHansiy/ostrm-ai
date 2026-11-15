@@ -1,0 +1,47 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${OSTRM_PORT:-3111}:80"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      JWT_SECRET: ${JWT_SECRET:?请设置随机 JWT_SECRET}
+      AI_SERVICE_URL: http://ai:8787
+      AI_BRIDGE_KEY: ${AI_BRIDGE_KEY:?请设置随机 AI_BRIDGE_KEY}
+      AI_AUTO_ENQUEUE: ${AI_AUTO_ENQUEUE:-false}
+      GITHUB_REPO_OWNER: imHansiy
+      GITHUB_REPO_NAME: ostrm-ai
+    volumes:
+      - ${CONFIG_PATH_HOST:-./data/config}:/maindata/config
+      - ${DB_PATH_HOST:-./data/db}:/maindata/db
+      - ${LOG_PATH_HOST:-./logs}:/maindata/log
+      - ${STRM_PATH_HOST:-./strm}:/app/backend/strm
+    depends_on:
+      ai:
+        condition: service_healthy
+    restart: unless-stopped
+  ai:
+    build: ./ai-service
+    environment:
+      OPENLIST_URL: ${OPENLIST_URL:?请配置 OpenList 地址}
+      PUBLIC_OPENLIST_URL: ${PUBLIC_OPENLIST_URL:-}
+      OPENLIST_USERNAME: ${OPENLIST_USERNAME:-admin}
+      OPENLIST_PASSWORD: ${OPENLIST_PASSWORD:-}
+      OPENLIST_TOKEN: ${OPENLIST_TOKEN:-}
+      AI_BRIDGE_KEY: ${AI_BRIDGE_KEY:?请设置随机 AI_BRIDGE_KEY}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-https://api.modelbest.ai/v1}
+      MODEL_NAME: ${MODEL_NAME:-MiniCPM-V-4.7-35B-A3B}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_PROXY_URL: ${MODEL_PROXY_URL:-}
+      MEDIA_ALLOWED_HOSTS: ${MEDIA_ALLOWED_HOSTS:-}
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL:-}
+      AI_DB_BACKEND: ${AI_DB_BACKEND:-sqlite}
+      AI_TIDB_HOST: ${AI_TIDB_HOST:-}
+      AI_TIDB_PORT: ${AI_TIDB_PORT:-4000}
+      AI_TIDB_USER: ${AI_TIDB_USER:-}
+      AI_TIDB_PASSWORD: ${AI_TIDB_PASSWORD:-}
+      AI_TIDB_DATABASE: ${AI_TIDB_DATABASE:-openlist_ai}
+    volumes:
+      - ${AI_DATA_PATH_HOST:-./data/ai}:/data
+      - ${STRM_PATH_HOST:-./strm}:/exports
+    restart: unless-stopped

@@ -126,6 +126,14 @@ gradle-app.setting
 !gradle-wrapper.jar
 !gradle-wrapper.properties
 .GradleTaskOutputCache
+.local/
+ai-service/
+data/
+strm/
+!frontend/package-lock.json
+!frontend/nuxt.config.ts
+!frontend/tailwind.config.js
+!backend/src/test/**
 
 # Ignore Spring Boot specific
 **/application-*.properties
