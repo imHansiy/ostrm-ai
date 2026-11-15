@@ -142,7 +142,7 @@ uvicorn aitags.app:app --host 127.0.0.1 --port 8787 --workers 1 --no-access-log
 <script defer src="/ai/assets/ai.js"></script>
 ```
 
-打开 `/ai/exports` 管理导出，或 ` /@manage?ai=video-tags&view=settings` 管理识别。旧 `/ai/cinema` 会跳转到资料导出页；不再提供旧影视播放器。可选 `AI_PROXY_ENABLED=true` 用于单端口反代原 OpenList，但生产优先使用现有 nginx/Caddy。需要完整 OStrm Java/Nuxt UI 时，另在具有 Java21/容器条件的主机安装完整版本。
+打开 `/ai/exports` 管理导出，或 `/@manage?ai=video-tags&view=settings` 管理识别。旧 `/ai/cinema` 会跳转到资料导出页；不再提供旧影视播放器。可选 `AI_PROXY_ENABLED=true` 用于单端口反代原 OpenList，但生产优先使用现有 nginx/Caddy。需要完整 OStrm Java/Nuxt UI 时，另在具有 Java21/容器条件的主机安装完整版本。
 
 详细协议、升级、备份与排错见 [AI_PROTOCOLS.md](docs/AI_PROTOCOLS.md)。
 
@@ -167,7 +167,7 @@ npm run ui
 
 Java 需要 21。Windows 下若中文路径导致 Gradle 类路径异常，可 `subst O: 当前仓库绝对路径` 后在 `O:\backend` 执行；测试通过后移除映射。集成测试生成真实合成 MP4、实际压缩并发送视频内容到固定响应的模型接口，验证 Java JWT、队列、协议、HTTP Range 和 FFmpeg 解码；它不衡量模型准确率。GitHub Actions 另构建 AI 镜像、验证生产 Caddy 配置，并启动真正的 Jellyfin 导入 STRM/NFO/海报。
 
-测试结果和未验证范围见 [验证说明](docs/AI_PROTOCOLS.md#验证范围)。所有日常修改在 dev；发布必须 dev → beta → main。
+测试结果和未验证范围见 [实际验证记录](docs/VALIDATION.md)。所有日常修改在 dev；发布必须 dev → beta → main。
 
 ## 致谢与许可证
 

@@ -84,6 +84,8 @@ python -m aitags.migrate_tidb --source /原数据目录/aitags.sqlite3
 
 ## 验证范围
 
+最新交付结果与真实 TiDB/在线模型数据见 [VALIDATION.md](VALIDATION.md)。
+
 本地验证包含 Python API/扫描/媒体/权限/协议测试、Java 测试和 Spotless、Nuxt 生产生成、真实 Java 登录桥接与 Python Worker、实际 FFmpeg 压缩与解码、HTTP Range、官方 @jellyfin/sdk 0.13、桌面和 390px 移动端页面操作及溢出检查。集成模型使用固定响应，不向 CI 注入任何真实密钥。
 
 CI 工作流 `.github/workflows/ai-protocols.yml` 在 dev push 时执行，另检查 AI Docker 镜像、Caddy 和真实 Jellyfin 10.11 NFO/海报导入。**具体最新通过状态以 GitHub Actions 为准**，不能将定义了测试等同于已经通过。物理 Infuse/Kodi/TVBox/Apple 客户端和各种网盘视频编码组合未穷尽验证。
