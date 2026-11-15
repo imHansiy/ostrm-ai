@@ -253,6 +253,18 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
     def remaining():
         return max(.1, deadline - time.monotonic())
 
+    def artwork(sample,output):
+        # No second cloud-media read: use the local compressed timeline.
+        try:
+            cover=output.with_name('poster.jpg')
+            run_process([config.FFMPEG,'-v','error','-nostdin','-y','-threads','1',
+                '-ss',str(min(sample['duration']/3,30)),'-i',str(output),'-frames:v','1','-an',
+                '-threads','1','-q:v','3',str(cover)],min(10,remaining()),cancelled)
+            data=cover.read_bytes()
+            if 0<len(data)<=1024**2:sample['cover']=base64.b64encode(data).decode()
+        except (MediaError,OSError):pass
+        return sample
+
     http_options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','15000000']
     with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled) as (source, used):
         duration = video_duration(source, http_options, remaining(), cancelled)
@@ -292,9 +304,9 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
                 if 0 < size <= NATIVE_VIDEO_MAX_BYTES and abs(
                     duration - video_duration(str(output), [], remaining(), cancelled)
                 ) <= 1 / fps + .05:
-                    return {'duration':duration,'video':base64.b64encode(output.read_bytes()).decode(),
+                    return artwork({'duration':duration,'video':base64.b64encode(output.read_bytes()).decode(),
                             'video_bytes':size,'network_bytes':used[0],'context_frames':[],
-                            'context_revision':3,'encoding':{**encoding,'passes':1,'rate_control':'crf'}}
+                            'context_revision':3,'encoding':{**encoding,'passes':1,'rate_control':'crf'}},output)
                 output.unlink()
             # Decode the cloud source once. Both x264 passes reuse a bounded lossless copy.
             decode = [config.FFMPEG,'-v','error','-xerror','-nostdin','-y','-threads','2',
@@ -368,14 +380,4 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
                     'encoding':encoding}
             if subtitle_data:
                 sample['subtitles'] = subtitle_data
-            # Reuse the already downloaded, compressed timeline for artwork.
-            # This does not issue a second cloud-media read.
-            try:
-                cover=Path(temp)/'poster.jpg'
-                run_process([config.FFMPEG,'-v','error','-nostdin','-y','-threads','1',
-                    '-ss',str(min(duration/3,30)),'-i',str(output),'-frames:v','1','-an',
-                    '-threads','1','-q:v','3',str(cover)],min(10,remaining()),cancelled)
-                data=cover.read_bytes()
-                if 0<len(data)<=1024**2:sample['cover']=base64.b64encode(data).decode()
-            except (MediaError,OSError):pass
-            return sample
+            return artwork(sample,output)
