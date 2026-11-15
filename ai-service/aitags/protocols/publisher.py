@@ -115,27 +115,34 @@ class Publisher:
             root=self.directory(publication['id']);items=self.catalog.items(publication)
             report={'items':len(items),'written':0,'unchanged':0,'conflicts':[],'missing_covers':0}
             total_bytes=0
-            for item in items:
-                stem=basename(item['title'])[:110]+' ['+item['id'][:8]+']'
-                directory=root/stem
-                files=self.files(item,stem,publication)
-                total_bytes+=sum(len(data) for data in files.values())
-                if total_bytes>self.max_bytes:raise HTTPException(413,'导出资料超过上限，请拆分订阅目录')
-                if stem+'-poster.jpg' not in files:report['missing_covers']+=1
-                result=self.write(directory,files)
-                report['written']+=result['written'];report['unchanged']+=result['unchanged']
-                report['conflicts'].extend(stem+'/'+name for name in result['conflicts'])
+            for offset in range(0,len(items),100):
+                batch=items[offset:offset+100]
+                with self.catalog.artifact_batch(batch):
+                    for item in batch:
+                        stem=basename(item['title'])[:110]+' ['+item['id'][:8]+']'
+                        directory=root/stem
+                        files=self.files(item,stem,publication)
+                        total_bytes+=sum(len(data) for data in files.values())
+                        if total_bytes>self.max_bytes:raise HTTPException(413,'导出资料超过上限，请拆分订阅目录')
+                        if stem+'-poster.jpg' not in files:report['missing_covers']+=1
+                        result=self.write(directory,files)
+                        report['written']+=result['written'];report['unchanged']+=result['unchanged']
+                        report['conflicts'].extend(stem+'/'+name for name in result['conflicts'])
             return report
 
     def zip(self,publication):
         output=tempfile.SpooledTemporaryFile(max_size=8*1024**2)
         try:
             with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:
-                for item in self.catalog.items(publication):
-                    stem=basename(item['title'])[:110]+' ['+item['id'][:8]+']'
-                    for name,data in self.files(item,stem,publication).items():
-                        archive.writestr(stem+'/'+name,data)
-                        if output.tell()>self.max_bytes:raise HTTPException(413,'导出包超过上限，请拆分订阅目录')
+                items=self.catalog.items(publication)
+                for offset in range(0,len(items),100):
+                    batch=items[offset:offset+100]
+                    with self.catalog.artifact_batch(batch):
+                        for item in batch:
+                            stem=basename(item['title'])[:110]+' ['+item['id'][:8]+']'
+                            for name,data in self.files(item,stem,publication).items():
+                                archive.writestr(stem+'/'+name,data)
+                                if output.tell()>self.max_bytes:raise HTTPException(413,'导出包超过上限，请拆分订阅目录')
                 archive.writestr('README.txt','STRM/NFO/封面来自 OStrm AI。播放地址是限定目录的可撤销凭据，请仅导入受信任的播放器。\n')
             output.seek(0);return output
         except BaseException:output.close();raise

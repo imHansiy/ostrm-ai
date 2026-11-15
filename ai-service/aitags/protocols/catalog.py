@@ -7,6 +7,7 @@ import posixpath
 import re
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime,timezone
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
@@ -44,6 +45,25 @@ class MediaCatalog:
     def __init__(self,db,ol):
         self.db=db;self.ol=ol;self.store=MediaStore(db);self.library=LibraryCatalog(db)
         self.lock=threading.RLock();self.cache={};self.tokens={}
+        self.artifacts=threading.local()
+
+    @contextmanager
+    def artifact_batch(self,items):
+        """Bound export reads to one result/cover query per 100 files on TiDB."""
+        paths=[item['path'] for item in items]
+        previous=getattr(self.artifacts,'rows',None)
+        rows=self.db.videos_by_path(paths)
+        if paths:
+            if self.db.backend=='tidb':
+                expression=','.join('UNHEX(SHA2(?,256))' for _ in paths)
+                covers=self.db.all(f'SELECT * FROM covers WHERE path_key IN ({expression})',paths)
+            else:
+                expression=','.join('?' for _ in paths)
+                covers=self.db.all(f'SELECT * FROM covers WHERE path IN ({expression})',paths)
+        else:covers=[]
+        self.artifacts.rows=(rows,{row['path']:row for row in covers})
+        try:yield
+        finally:self.artifacts.rows=previous
 
     def invalidate(self):
         with self.lock:self.cache.clear()
@@ -102,7 +122,8 @@ class MediaCatalog:
         return self.normalize(public,index)
 
     def full_result(self,item):
-        row=self.db.one('SELECT result FROM videos WHERE path=?',(item['path'],))
+        batch=getattr(self.artifacts,'rows',None)
+        row=batch[0].get(item['path']) if batch is not None else self.db.one('SELECT result FROM videos WHERE path=?',(item['path'],))
         result=json.loads(row['result']) if row else {}
         # Export useful observations, not raw model responses or private diagnostics.
         return {key:result[key] for key in ('summary','tags','visible_text','segments','characters','events','uncertainty','verification','sampling') if key in result}
@@ -132,7 +153,9 @@ class MediaCatalog:
                 'webdav_username':publication['id'],'webdav_password':self.store.secret(publication['id'])}
 
     def jpeg(self,item,remote=True):
-        row=self.db.one('SELECT * FROM covers WHERE path=? AND fingerprint=?',(item['path'],item['fingerprint']))
+        batch=getattr(self.artifacts,'rows',None)
+        row=batch[1].get(item['path']) if batch is not None else self.db.one('SELECT * FROM covers WHERE path=? AND fingerprint=?',(item['path'],item['fingerprint']))
+        if row and row['fingerprint']!=item['fingerprint']:return None
         if not row:return None
         data=row['jpeg'] or cached_cover(self.db,item['path'],item['fingerprint'])
         if not data and remote and row['sidecar']:

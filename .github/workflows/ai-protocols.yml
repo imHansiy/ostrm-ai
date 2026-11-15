@@ -48,6 +48,8 @@ jobs:
         working-directory: tests/clients
       - name: Build deployable AI image
         run: docker build -t ostrm-ai-worker:ci ai-service
+      - name: Validate portable Compose configuration
+        run: JWT_SECRET=fixture-only-jwt-secret AI_BRIDGE_KEY=fixture-bridge-key OPENLIST_URL=http://openlist:5244 docker compose --env-file .env.ai.example -f compose.ai.yml config --quiet
       - name: Build complete OStrm AI application
         run: docker build -t ostrm-ai-app:ci .
       - name: Validate Caddy production routing

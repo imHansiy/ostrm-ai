@@ -15,6 +15,26 @@ from .conftest import add_video
 ADMIN={'Authorization':'admin'}
 
 
+def test_bulk_exports_batch_result_and_cover_queries(env,monkeypatch):
+    publication=setup(env);db,ol,worker,client=env
+    for index in range(205):
+        db.execute("""INSERT INTO videos(path,fingerprint,identity,size,modified,status,result,manual,removed,error,updated)
+          SELECT ?,fingerprint,identity,size,modified,status,result,manual,removed,error,updated FROM videos WHERE path=?""",
+          (f'/public/批量视频{index}.mp4','/public/a.mp4'))
+    queries=[];all_rows=db.all
+    def observed(sql,args=()):
+        queries.append(sql);return all_rows(sql,args)
+    monkeypatch.setattr(db,'all',observed)
+    catalog=client.app.state.media;catalog.invalidate()
+    output=client.app.state.publisher.zip(publication)
+    with zipfile.ZipFile(output) as archive:
+        assert len([name for name in archive.namelist() if name.endswith('.strm')])==206
+        assert len([name for name in archive.namelist() if name.endswith('.nfo')])==206
+    output.close()
+    assert len(queries)<30,queries
+    assert getattr(catalog.artifacts,'rows',None) is None
+
+
 def test_long_chinese_filenames_and_complete_backup(env,tmp_path):
     from aitags.protocols.publisher import basename
     from aitags.storage import copy_database
