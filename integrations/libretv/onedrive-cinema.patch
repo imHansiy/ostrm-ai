@@ -82,10 +82,10 @@ index 0000000..496a96a
 +网盘页的筛选与分页通过 Next 原生 History 接入更新 URL，只请求列表数据，不重复请求整个页面；连续修改条件以最新 URL 为准，浏览器前进后退仍可恢复条件。
 diff --git a/deploy/freebsd/service.sh b/deploy/freebsd/service.sh
 new file mode 100644
-index 0000000..ebc4e3d
+index 0000000..c3abefd
 --- /dev/null
 +++ b/deploy/freebsd/service.sh
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,42 @@
 +#!/bin/sh
 +set -eu
 +PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin${PATH:+:$PATH}"
@@ -109,7 +109,20 @@ index 0000000..ebc4e3d
 +            /usr/bin/pkill -TERM -L -F "$RUN/supervisor.pid"
 +            count=0
 +            while alive && [ "$count" -lt 40 ]; do sleep 1; count=$((count+1)); done
-+            if alive; then echo 'LibreTV is still stopping' >&2; exit 1; fi
++            if alive; then
++                # Next can keep long-lived HTTP connections open on SIGTERM.
++                # Signal only the child of this locked supervisor, never a name match.
++                child=$(cat "$RUN/node.pid" 2>/dev/null || true)
++                supervisor=$(cat "$RUN/supervisor.pid" 2>/dev/null || true)
++                case "$child:$supervisor" in *[!0-9:]*|:*|*:) echo 'Invalid LibreTV process identity' >&2; exit 1 ;; esac
++                parent=$(/bin/ps -p "$child" -o ppid= 2>/dev/null | /usr/bin/tr -d ' ' || true)
++                if [ "$child" -gt 1 ] && [ "$supervisor" -gt 1 ] && [ "$parent" = "$supervisor" ]; then
++                    kill -KILL "$child" 2>/dev/null || true
++                fi
++                count=0
++                while alive && [ "$count" -lt 15 ]; do sleep 1; count=$((count+1)); done
++                if alive; then echo 'LibreTV is still stopping; process identity not safe to force' >&2; exit 1; fi
++            fi
 +        fi
 +        ;;
 +    status) if alive; then echo 'LibreTV supervisor running'; else echo 'LibreTV stopped'; fi ;;
