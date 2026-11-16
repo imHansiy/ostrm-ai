@@ -14,15 +14,15 @@ index 5396501..2ade53d 100644
 +public/source.zip
 diff --git a/deploy/freebsd/README.md b/deploy/freebsd/README.md
 new file mode 100644
-index 0000000..d54c57f
+index 0000000..05213f0
 --- /dev/null
 +++ b/deploy/freebsd/README.md
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,60 @@
 +# LibreTV 原版界面与 OpenList 接入（FreeBSD 原生）
 +
 +基于 LibreSpark/LibreTV 2.23.2，固定上游提交 `92461b5e458ba45233e1cba30b09ce0bbc0fa911`。继续遵守 AGPL-3.0-or-later；保留上游 LICENSE 与版权。部署时应在 `/cinema/source.zip` 提供本次构建的完整改造源码（不含 `.env`、凭据、依赖和构建缓存）；此地址供部署者及使用者获取源码。
 +
-+保留上游原版首页、推荐区、导航、设置和播放器界面，不提供自定义网盘海报墙或 `/api/library` 接口。两个 CMS 源通过 `DEFAULT_SOURCES` 预置到原版源管理，使用原版搜索、详情与播放流程。成人源默认受原版“成人内容过滤”控制：设置 → 偏好设置 → 首页与内容中关闭过滤，再在源管理中勾选成人源。
++保留上游原版首页、推荐区、导航、设置和播放器界面，仅在顶部新增“我的网盘”入口，打开独立 `/library` 海报页。两个 CMS 源通过 `DEFAULT_SOURCES` 预置到原版源管理，继续使用原版搜索、详情与播放流程。“我的网盘”单独提供成人／非成人切换、关键词、类型、年份、排序及每页 24 项的分页海报；它的显式范围切换独立于原版搜索的成人过滤设置。成人源默认受原版“成人内容过滤”控制：设置 → 偏好设置 → 首页与内容中关闭过滤，再在源管理中勾选成人源。
 +
 +仅保留同域名路径、带密钥的 CMS 地址及原视频格式接入所需兼容。MP4/WebM 等由浏览器解码，HLS 继续使用原播放器，不做服务端转码；浏览器不支持的容器或编码需要外部播放器。
 +
@@ -68,6 +68,16 @@ index 0000000..d54c57f
 +运行 `tests/cinema.spec.ts` 的 Playwright 用例需设置 `CINEMA_TEST_ORIGIN`（不含 `/cinema`）、`CINEMA_TEST_PASSWORD`，也可提供经过授权生成的短期 HttpOnly 会话 `CINEMA_TEST_SESSION`。Chrome 通道可通过 `TEST_CHROME_CHANNEL=chrome` 选择。用例验证原版首页、两个预置源、原版过滤设置、真实搜索、详情和原文件播放，不截取成人画面。
 +
 +必须同时验证原 OpenList、AI 服务、原订阅不受影响。停止或卸载影院只应处理影院的 daemon、文件和反代位置，不能删除 OpenList 或 AI 数据库。
++
++## 我的网盘
++
++桌面端点击顶部“我的网盘”，手机端在右上角菜单中选择；也可以直接访问 `/cinema/library`。此页显示授权 CMS 源中已识别并发布的视频，不会主动扫描未识别文件。点击海报继续使用原版详情与播放器。切换内容范围会清除关键词、类型、年份和页码，筛选或排序变化也会回到第 1 页；浏览器前进、后退和分享链接会保留筛选条件。
++
++年份来自源接口的 `vod_year`（本项目按文件名提取），只采用 1878 年至当前年份后两年的有效值，其他作为未知；没有年份的数据可筛选“年份未知”。最新／最早收录沿用源的目录返回顺序。当前接入一组非成人源、一组成人源，分别使用服务端预置的范围授权，浏览器不能指定任意目录源 URL。
++
++`/api/library` 要求与影院相同的密码会话，响应禁止公共缓存。服务端仅缓存轻量目录，60 秒有效，过期时可先返回最近 4 分钟内的旧目录并后台刷新；新识别条目因此通常在后续刷新中自动出现。浏览器每页只收 24 项，图片懒加载，目录请求不会触发视频下载、转码或识别。为防止小主机失控，单源最多 100 个 CMS 分页、同时 2 个请求、45 秒总超时；超过上限需缩小发布范围，不会悄悄截断结果。原始接口仍支持其他客户端独立使用。
++
++原版详情接口会复用已读取的目录详情，减少重复请求；播放地址仍由原版播放器解析，原网盘服务在播放时解析当前直链。
 diff --git a/deploy/freebsd/service.sh b/deploy/freebsd/service.sh
 new file mode 100644
 index 0000000..ebc4e3d
@@ -211,15 +221,26 @@ index 0000000..54f39e8
 +  use:{baseURL:process.env.CINEMA_TEST_ORIGIN||'http://127.0.0.1:18081',channel:process.env.TEST_CHROME_CHANNEL||'chrome',trace:'retain-on-failure'},
 +  projects:[{name:'desktop',use:{viewport:{width:1440,height:1000}}},{name:'mobile',use:{viewport:{width:390,height:844},isMobile:true,hasTouch:true}}]});
 diff --git a/src/app/api/detail/route.ts b/src/app/api/detail/route.ts
-index c989f70..82f892d 100644
+index c989f70..e9b3e04 100644
 --- a/src/app/api/detail/route.ts
 +++ b/src/app/api/detail/route.ts
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
 +import { cmsUrl } from '@/lib/app-path';
++import {cachedLibraryDetail} from '@/lib/library';
  import { NextResponse } from 'next/server';
  import { guardRequest } from '@/lib/api-guard';
  import { cmsRequestHeaders, parseDetail, parseDetailPageHtml } from '@/lib/cms-parser';
-@@ -60,7 +61,7 @@ export async function GET(req: Request) {
+@@ -41,6 +43,9 @@ export async function GET(req: Request) {
+     return NextResponse.json({ error: '无效的点播源配置' }, { status: 400 });
+   }
+ 
++  const libraryDetail=cachedLibraryDetail(source.url,id);
++  if(libraryDetail)return NextResponse.json(libraryDetail,{headers:{'Cache-Control':'private, no-store'}});
++
+   try {
+     // 详情页根地址：显式 detail 优先，其次 baseUrl 参数，最后用接口地址的 origin 推导
+     // （Apple CMS 的详情页通常与接口同域）。脏 URL 会让 new URL 抛错，由外层 catch 兜底
+@@ -60,7 +65,7 @@ export async function GET(req: Request) {
      let resolved: VideoDetail | null = null;
  
      // 1) 标准列表接口
@@ -228,6 +249,22 @@ index c989f70..82f892d 100644
      const res = await fetchUpstream(api, { timeoutMs: 10000, headers: cmsRequestHeaders() });
      if (res.ok) {
        const data = await res.json();
+diff --git a/src/app/api/library/route.ts b/src/app/api/library/route.ts
+new file mode 100644
+index 0000000..da9abf5
+--- /dev/null
++++ b/src/app/api/library/route.ts
+@@ -0,0 +1,10 @@
++import {NextResponse} from 'next/server';
++import {guardRequest} from '@/lib/api-guard';
++import {readLibrary} from '@/lib/library';
++
++export const runtime='nodejs';
++export async function GET(req:Request){
++  const denied=guardRequest(req);if(denied)return denied;
++  try{return NextResponse.json(await readLibrary(new URL(req.url).searchParams),{headers:{'Cache-Control':'private, no-store'}});}
++  catch{return NextResponse.json({error:'网盘目录暂时不可用，请稍后重试或检查源配置'},{status:502,headers:{'Cache-Control':'no-store'}});}
++}
 diff --git a/src/app/api/search/route.ts b/src/app/api/search/route.ts
 index 1a050ed..2a04ced 100644
 --- a/src/app/api/search/route.ts
@@ -317,6 +354,16 @@ index b453f66..9f95dd3 100644
    },
  };
  
+diff --git a/src/app/library/page.tsx b/src/app/library/page.tsx
+new file mode 100644
+index 0000000..b728ee4
+--- /dev/null
++++ b/src/app/library/page.tsx
+@@ -0,0 +1,4 @@
++import {Suspense} from 'react';
++import {LibraryWall} from '@/components/library-wall';
++
++export default function LibraryPage(){return <Suspense><LibraryWall/></Suspense>;}
 diff --git a/src/app/manifest.ts b/src/app/manifest.ts
 index f460d2d..e89524d 100644
 --- a/src/app/manifest.ts
@@ -379,7 +426,7 @@ index 11e5c38..6504d9a 100644
      } catch {
        // 补拉预置数据失败不影响登录后的正常使用
 diff --git a/src/components/header.tsx b/src/components/header.tsx
-index 55a5e66..58d7935 100644
+index 55a5e66..baf9fc0 100644
 --- a/src/components/header.tsx
 +++ b/src/components/header.tsx
 @@ -1,4 +1,5 @@
@@ -397,6 +444,102 @@ index 55a5e66..58d7935 100644
            </Link>
  
            {showSearch && (
+@@ -104,6 +105,7 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
+ 
+           {/* 桌面 / 平板：完整导航 */}
+           <nav className="hidden sm:flex items-center gap-1 ml-auto">
++            <HeaderLink href="/library" active={pathname === '/library'}>我的网盘</HeaderLink>
+             <HeaderLink href="/live" active={pathname === '/live'}>
+               直播
+             </HeaderLink>
+@@ -152,6 +154,7 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
+           >
+             {/* 直播页顶栏有搜索框（<sm 隐藏）：这里补一个入口，进了直播页再搜频道 */}
+             <div className="grid grid-cols-2 gap-1.5">
++              <MenuRow href="/library" active={pathname === '/library'} icon="home" onNavigate={closeMenu}>我的网盘</MenuRow>
+               <MenuRow href="/live" active={pathname === '/live'} icon="bolt" onNavigate={closeMenu}>
+                 直播
+               </MenuRow>
+diff --git a/src/components/library-wall.tsx b/src/components/library-wall.tsx
+new file mode 100644
+index 0000000..a6fd382
+--- /dev/null
++++ b/src/components/library-wall.tsx
+@@ -0,0 +1,74 @@
++'use client';
++import { useEffect,useState } from 'react';
++import { useRouter,useSearchParams } from 'next/navigation';
++import { useQuery } from '@tanstack/react-query';
++import { Header } from './header';
++import { SiteFooter } from './site-footer';
++import { DetailModal } from './detail-modal';
++import { useAuth } from './auth';
++import { api } from '@/lib/client-api';
++import { appPath } from '@/lib/app-path';
++import type { LibraryItem,LibraryPage } from '@/lib/library';
++
++export function LibraryWall() {
++  const router=useRouter(),params=useSearchParams();
++  const {verified,checked,openLogin}=useAuth();
++  const content=params.get('content')==='adult'?'adult':'general';
++  const page=Math.max(1,Number(params.get('page'))||1),q=params.get('s')||'',category=params.get('category')||'',year=params.get('year')||'',sort=params.get('sort')||'newest';
++  const [input,setInput]=useState(q),[detail,setDetail]=useState<LibraryItem|null>(null);
++  useEffect(()=>setInput(q),[q]);
++  const update=(changes:Record<string,string>)=>{const next=new URLSearchParams(params.toString());
++    for(const [k,v]of Object.entries(changes)){if(v)next.set(k,v);else next.delete(k)}
++    router.push('/library?'+next.toString(),{scroll:true})};
++  const library=useQuery({queryKey:['own-library',content,page,q,category,year,sort],enabled:verified,staleTime:60000,retry:1,
++    queryFn:({signal})=>api.library(new URLSearchParams({content,page:String(page),q,category,year,sort}),signal) as Promise<LibraryPage>});
++  const data=library.data;
++  const currentPage=data?.page||page;
++  const pageNumbers=data?Array.from(new Set([1,data.pages,currentPage-1,currentPage,currentPage+1])).filter(n=>n>=1&&n<=data.pages).sort((a,b)=>a-b):[];
++  return <><Header/><main className="max-w-[1440px] mx-auto px-4 sm:px-8 pb-14">
++    <section className="py-9 sm:py-14 border-b border-line mb-7">
++      <p className="text-accent text-xs font-semibold tracking-[.25em] mb-3">MY CLOUD LIBRARY</p>
++      <div className="flex flex-wrap items-end justify-between gap-5">
++        <div><h1 className="text-3xl sm:text-5xl font-bold tracking-tight">我的网盘</h1>
++          <p className="text-muted mt-4 leading-7">收藏在网盘，故事在这里。{data?`共 ${data.total.toLocaleString()} 部视频`:'浏览已识别并发布的视频'}</p></div>
++        <div className="inline-flex rounded-full border border-line p-1 bg-surface" aria-label="内容范围">
++          {(['general','adult']as const).map(v=><button key={v} aria-pressed={content===v} onClick={()=>update({content:v,page:'1',category:'',year:'',s:''})}
++            className={'rounded-full px-5 py-2 text-sm transition '+(content===v?'bg-accent text-on-accent font-semibold':'text-muted hover:text-content')}>{v==='general'?'非成人':'成人'}</button>)}
++        </div>
++      </div>
++      <form className="flex flex-wrap gap-3 mt-8" onSubmit={e=>{e.preventDefault();update({s:input.trim(),page:'1'})}}>
++        <input aria-label="搜索网盘视频" className="input flex-1 min-w-[180px] h-12" placeholder="搜索片名、标签或简介" value={input} onChange={e=>setInput(e.target.value)}/>
++        <select aria-label="视频类型" className="input w-full sm:w-auto sm:max-w-[170px]" value={category} onChange={e=>update({category:e.target.value,page:'1'})}>
++          <option value="">全部类型</option>{data?.categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
++        </select>
++        <select aria-label="视频年份" className="input w-full sm:w-auto" value={year} onChange={e=>update({year:e.target.value,page:'1'})}>
++          <option value="">全部年份</option>{data?.years.map(y=><option key={y} value={y}>{y}</option>)}<option value="unknown">年份未知</option>
++        </select>
++        <select aria-label="排序方式" className="input w-full sm:w-auto" value={sort} onChange={e=>update({sort:e.target.value,page:'1'})}>
++          <option value="newest">最新收录</option><option value="oldest">最早收录</option><option value="name">名称排序</option><option value="year">年份从新到旧</option>
++        </select><button className="btn-primary px-6" type="submit">搜索</button>
++      </form>
++    </section>
++    {!verified&&checked?<div className="rounded-2xl border border-line bg-surface p-12 text-center"><h2 className="text-xl font-semibold mb-3">登录你的私人影院</h2><p className="text-muted mb-6">登录后浏览网盘中的影片、简介与收藏。</p><button className="btn-primary" onClick={openLogin}>登录影院</button></div>:<>
++      <div className="flex justify-between items-center text-sm text-muted mb-5"><span>{q?`“${q}”的搜索结果`:'全部收藏'}{data?` · ${data.total.toLocaleString()} 部`:''}</span><span>每页 24 部</span></div>
++      {library.isError?<div role="alert" className="p-8 rounded-xl border border-line text-center"><p>暂时无法加载影片</p><button className="btn-ghost mt-4" onClick={()=>library.refetch()}>重试</button></div>:null}
++      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-x-4 gap-y-7 sm:gap-x-5" role="region" aria-label="影片海报墙" aria-busy={library.isFetching}>
++        {(!checked||(library.isPending&&!library.isError))?Array.from({length:24},(_,i)=><div key={i} className="aspect-[2/3] rounded-xl bg-surface animate-pulse"/>):data?.items.map(item=><button key={item.sourceKey+item.vodId} onClick={()=>setDetail(item)} className="group text-left min-w-0 self-start" aria-label={'查看详情：'+item.name}>
++          <div className="relative aspect-[2/3] overflow-hidden rounded-xl bg-surface border border-line shadow-sm transition duration-300 group-hover:-translate-y-1 group-hover:shadow-xl">
++            {/* eslint-disable-next-line @next/next/no-img-element */}
++            <img src={item.pic||appPath('/icons/icon-512.png')} alt={item.name} loading="lazy" decoding="async" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" onError={e=>{e.currentTarget.onerror=null;e.currentTarget.src=appPath('/icons/icon-512.png')}}/>
++            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition p-4 flex flex-col justify-end"><p className="text-white/90 text-xs leading-6 line-clamp-5">{item.summary||'查看影片详情'}</p><span className="text-white font-semibold mt-3 text-sm">查看详情 →</span></div>
++            {item.year&&item.year!=='0'?<span className="absolute left-2 top-2 px-2 py-1 text-xs rounded-md bg-black/65 text-white">{item.year}</span>:null}
++          </div><h2 className="mt-3 text-sm font-semibold line-clamp-2 leading-6 min-h-12 break-all group-hover:text-accent">{item.name}</h2><p className="text-xs text-muted mt-1 truncate">{item.tags.slice(0,3).join(' · ')||item.typeName||'视频'}</p>
++        </button>)}
++      </div>
++      {data&&!data.items.length?<div className="text-center py-20 text-muted">没有找到对应视频，试试其他关键词或类型。</div>:null}
++      {data&&data.pages>1?<nav aria-label="视频分页" className="flex flex-wrap gap-2 justify-center items-center mt-10">
++        <button className="btn-ghost" disabled={currentPage<=1||library.isFetching} onClick={()=>update({page:String(currentPage-1)})}>上一页</button>
++        {pageNumbers.map((n,i)=><span key={n} className="inline-flex items-center gap-2">{i>0&&n>pageNumbers[i-1]+1?<span aria-hidden="true" className="text-muted">…</span>:null}<button aria-label={'第 '+n+' 页'} aria-current={n===currentPage?'page':undefined} className={n===currentPage?'btn-primary':'btn-ghost'} disabled={library.isFetching} onClick={()=>update({page:String(n)})}>{n}</button></span>)}
++        <button className="btn-ghost" disabled={currentPage>=data.pages||library.isFetching} onClick={()=>update({page:String(currentPage+1)})}>下一页</button>
++        <span className="text-xs text-muted w-full text-center mt-2">第 {currentPage} / {data.pages} 页 · 共 {data.total.toLocaleString()} 部</span>
++      </nav>:null}
++    </>}
++  </main><SiteFooter/><DetailModal item={detail} onClose={()=>setDetail(null)}/></>;
++}
 diff --git a/src/components/live-player.tsx b/src/components/live-player.tsx
 index ddfdf56..c3ce5f5 100644
 --- a/src/components/live-player.tsx
@@ -538,16 +681,17 @@ index 0000000..04f962b
 +  return url.toString();
 +}
 diff --git a/src/lib/client-api.ts b/src/lib/client-api.ts
-index 8237197..d0ac4ce 100644
+index 8237197..84f8a27 100644
 --- a/src/lib/client-api.ts
 +++ b/src/lib/client-api.ts
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  'use client';
 +import { appPath } from './app-path';
++import type {LibraryPage} from './library';
  
  import type { SearchResponse, SearchStreamEvent, SourceSearchOutcome, VideoDetail, DoubanResponse, BangumiCalendarResponse, AuthStatusResponse, SourceConfig, SearchResultItem, LivePlaylistResponse, LiveEpgResponse, SourceListPayload, QualityProbeItem, QualityProbeResult } from './types';
  
-@@ -88,7 +89,7 @@ async function consumeNdjson<T>(res: Response, onEvent: (event: T) => void): Pro
+@@ -88,7 +90,7 @@ async function consumeNdjson<T>(res: Response, onEvent: (event: T) => void): Pro
  async function request<T>(url: string, init?: RequestInit): Promise<T> {
    let res: Response;
    try {
@@ -556,7 +700,15 @@ index 8237197..d0ac4ce 100644
    } catch (err) {
      if (err instanceof DOMException && err.name === 'AbortError') throw err;
      throw new ApiError('网络请求失败，请检查网络连接', 0);
-@@ -161,7 +162,7 @@ export const api = {
+@@ -106,6 +108,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
+ }
+ 
+ export const api = {
++  library: (params:URLSearchParams,signal?:AbortSignal):Promise<LibraryPage> => request('/api/library?'+params.toString(),{signal}),
+   status: () => request<AuthStatusResponse>('/api/status'),
+ 
+   login: (password: string) =>
+@@ -161,7 +164,7 @@ export const api = {
    ): Promise<void> => {
      let res: Response;
      try {
@@ -565,7 +717,7 @@ index 8237197..d0ac4ce 100644
          method: 'POST',
          headers: { 'Content-Type': 'application/json' },
          body: JSON.stringify({ items }),
-@@ -277,7 +278,7 @@ export const api = {
+@@ -277,7 +280,7 @@ export const api = {
    /** 订阅导出（.m3u）下载地址 */
    liveExportUrl: (url: string) => {
      const sp = new URLSearchParams({ url, format: 'm3u' });
@@ -574,7 +726,7 @@ index 8237197..d0ac4ce 100644
    },
  
    /** 批量测活：分片级探测频道可达性与延迟（单批最多 50 条） */
-@@ -301,7 +302,7 @@ export const api = {
+@@ -301,7 +304,7 @@ export const api = {
      onResult: (result: LiveProbeResult) => void,
      signal?: AbortSignal
    ): Promise<void> => {
@@ -583,7 +735,7 @@ index 8237197..d0ac4ce 100644
        method: 'POST',
        headers: { 'Content-Type': 'application/json' },
        body: JSON.stringify({ urls }),
-@@ -328,7 +329,7 @@ async function searchStream(
+@@ -328,7 +331,7 @@ async function searchStream(
    onSource: (outcome: SourceSearchOutcome) => void,
    signal?: AbortSignal
  ): Promise<SearchResponse> {
@@ -592,6 +744,184 @@ index 8237197..d0ac4ce 100644
      method: 'POST',
      headers: { 'Content-Type': 'application/json' },
      body: JSON.stringify({ wd, sources, filterAdult }),
+diff --git a/src/lib/library.test.ts b/src/lib/library.test.ts
+new file mode 100644
+index 0000000..5b2f336
+--- /dev/null
++++ b/src/lib/library.test.ts
+@@ -0,0 +1,62 @@
++import {beforeEach,afterEach,describe,it,expect,vi} from 'vitest';
++import {libraryQuery,selectLibrary} from './library';
++
++const items=Array.from({length:55},(_,i)=>({vodId:String(i),name:`视频 ${i}`,sourceKey:'general',sourceName:'网盘',
++  summary:i===50?'厨房烹饪':'旅行',tags:i===50?['美食']:['旅行'],category:i%2?'2':'1',year:i%2?'2022':'2024'}));
++const snapshot={items,categories:[{id:'1',name:'旅行'},{id:'2',name:'教学'}],years:['2024','2022']};
++const select=(q:string)=>selectLibrary(snapshot,new URLSearchParams(q));
++
++describe('cloud library global filtering and pagination',()=>{
++ it('normalizes untrusted page, scope and sort values',()=>{
++  expect(libraryQuery(new URLSearchParams('page=NaN&content=all&sort=sql&year=x'))).toMatchObject({page:1,content:'general',sort:'newest',year:''});
++ });
++ it('paginates the full collection without missing final cards',()=>{
++  expect(select('').items).toHaveLength(24);expect(select('page=2').items[0].vodId).toBe('24');
++  expect(select('page=3').items).toHaveLength(7);expect(select('page=999').page).toBe(3);
++ });
++ it('searches tags and summaries beyond the first page, then paginates',()=>{
++  expect(select('q=厨房 美食').items.map(i=>i.vodId)).toEqual(['50']);
++  expect(select('category=1&year=2024').total).toBe(28);
++  expect(select('category=2&year=2024').total).toBe(0);
++ });
++ it('sorts the whole source while leaving the cached snapshot unchanged',()=>{
++  expect(select('sort=oldest').items[0].vodId).toBe('54');
++  expect(select('sort=name').items.slice(0,3).map(i=>i.vodId)).toEqual(['0','1','2']);
++  expect(select('sort=year').items.every(i=>i.year==='2024')).toBe(true);
++  expect(select('').items[0].vodId).toBe('0');
++ });
++});
++
++describe('authenticated scoped inventory loading',()=>{
++ beforeEach(()=>{delete (globalThis as {__libretvLibrary?:unknown}).__libretvLibrary;vi.resetModules();vi.stubEnv('DEFAULT_SOURCES',JSON.stringify([
++  {name:'normal',url:'https://general.example/api?key=normal'},
++  {name:'adult',url:'https://adult.example/api?key=adult',isAdult:true}]));});
++ afterEach(()=>{vi.unstubAllGlobals();vi.unstubAllEnvs();});
++ it('deduplicates concurrent refreshes and keeps scope credentials separate',async()=>{
++  const fetchMock=vi.fn(async(url:string)=>{
++   const u=new URL(url),adult=u.hostname.startsWith('adult'),page=Number(u.searchParams.get('pg'));
++   expect(u.searchParams.get('key')).toBe(adult?'adult':'normal');
++   return Response.json({code:1,pagecount:2,class:[],list:[{vod_id:(adult?'a':'g')+page,vod_name:'name',vod_year:page===1?'2024':'2099',type_id:1,vod_play_url:'播放$https://video.example/a.mp4'}]});
++  });vi.stubGlobal('fetch',fetchMock);
++  const {readLibrary,cachedLibraryDetail}=await import('./library');
++  const [a,b]=await Promise.all([readLibrary(new URLSearchParams()),readLibrary(new URLSearchParams('sort=name'))]);
++  expect(a.total).toBe(2);expect(b.total).toBe(2);expect(fetchMock).toHaveBeenCalledTimes(2);
++  expect(a.years).toEqual(['2024']);
++  expect(cachedLibraryDetail('https://general.example/api?key=normal','g1')?.episodes).toEqual(['https://video.example/a.mp4']);
++  expect(cachedLibraryDetail('https://evil.example/','g1')).toBeUndefined();
++  const adult=await readLibrary(new URLSearchParams('content=adult'));
++  expect(adult.items.every(i=>i.isAdult&&i.vodId.startsWith('a'))).toBe(true);
++  expect(a.items.every(i=>!i.isAdult&&i.vodId.startsWith('g'))).toBe(true);
++ });
++ it('rejects anonymous requests before fetching any source',async()=>{
++  vi.stubEnv('PASSWORD','test-password');vi.stubEnv('PROXY_SECRET','test-secret');
++  const fetchMock=vi.fn();vi.stubGlobal('fetch',fetchMock);
++  const {GET}=await import('../app/api/library/route');
++  const r=await GET(new Request('https://site.example/cinema/api/library?content=adult'));
++  expect(r.status).toBe(401);expect(fetchMock).not.toHaveBeenCalled();
++ });
++ it('rejects incomplete or invalid source data instead of publishing partial totals',async()=>{
++  vi.stubGlobal('fetch',vi.fn(async()=>Response.json({code:1,pagecount:101,list:[]})));
++  const {readLibrary}=await import('./library');await expect(readLibrary(new URLSearchParams())).rejects.toThrow('上限');
++ });
++});
+diff --git a/src/lib/library.ts b/src/lib/library.ts
+new file mode 100644
+index 0000000..3dd019f
+--- /dev/null
++++ b/src/lib/library.ts
+@@ -0,0 +1,104 @@
++import { getEnvSources } from './env-sources';
++import { parseDetail,parseSearchList } from './cms-parser';
++import { cmsUrl } from './app-path';
++import type { SearchResultItem,VideoDetail } from './types';
++
++export interface LibraryItem extends SearchResultItem { summary:string; tags:string[]; category:string }
++export interface LibraryPage {
++  items:LibraryItem[];total:number;page:number;pages:number;pageSize:number;
++  categories:{id:string;name:string}[];years:string[];content:'general'|'adult';
++}
++interface Snapshot {items:LibraryItem[];categories:LibraryPage['categories'];years:string[];details?:Map<string,VideoDetail>}
++type Entry={value:Snapshot;expires:number};
++// Next compiles API routes separately. Share the same bounded cache so the
++// original detail endpoint can reuse metadata already obtained from the source.
++const shared=globalThis as typeof globalThis & {__libretvLibrary?:{cache:Map<string,Entry>;pending:Map<string,Promise<Snapshot>>}};
++const {cache,pending}=shared.__libretvLibrary??= {cache:new Map(),pending:new Map()};
++const collator=new Intl.Collator('zh-CN',{numeric:true,sensitivity:'base'});
++const clean=(value:unknown)=>String(value??'').replace(/<[^>]*>/g,'').trim();
++const validYear=(value:unknown)=>{const year=String(value??'');return /^\d{4}$/.test(year)&&Number(year)>=1878&&Number(year)<=new Date().getUTCFullYear()+2?year:'';};
++
++export function cachedLibraryDetail(url:string,id:string):VideoDetail|undefined {
++  const source=getEnvSources().find(s=>s.url===url);if(!source)return;
++  const entry=cache.get(JSON.stringify([source.url,source.isAdult]));
++  if(entry&&Date.now()-entry.expires<240000)return entry.value.details?.get(id);
++}
++
++export function libraryQuery(params:URLSearchParams) {
++  const n=Number(params.get('page')||1);
++  const sort=params.get('sort')||'newest';
++  return {content:params.get('content')==='adult'?'adult':'general',
++    page:Number.isSafeInteger(n)&&n>0?Math.min(n,100000):1,
++    q:(params.get('q')||'').trim().slice(0,100),category:(params.get('category')||'').slice(0,50),
++    year:/^(\d{4}|unknown)$/.test(params.get('year')||'')?params.get('year')!:'',
++    sort:['newest','oldest','name','year'].includes(sort)?sort:'newest'} as const;
++}
++
++// A compact, bounded snapshot supports global sorting and year/tag filtering even
++// when a MacCMS provider only supports pg/wd/t. Never download video files here.
++async function snapshot(source:ReturnType<typeof getEnvSources>[number]):Promise<Snapshot> {
++  const key=JSON.stringify([source.url,source.isAdult]);
++  const load=()=>{
++    const active=pending.get(key);if(active)return active;
++    const task=(async()=>{
++      const signal=AbortSignal.timeout(45000);
++      const fetchPage=async(page:number)=>{
++        const response=await fetch(cmsUrl(source.url,{ac:'videolist',pg:page,limit:100}),{signal,cache:'no-store'});
++        if(!response.ok)throw new Error('媒体源暂时无法访问');
++        const data=await response.json();
++        if(data.code!==1||!Array.isArray(data.list))throw new Error('媒体源返回了无效数据');
++        return data;
++      };
++      const first=await fetchPage(1),count=Number(first.pagecount)||1;
++      if(!Number.isSafeInteger(count)||count<1||count>100)throw new Error('媒体源目录超出单源 100 页上限，请缩小发布范围');
++      const pages=[first];let next=2;
++      // Two workers and a shared deadline bound network/CPU usage on small hosts.
++      await Promise.all(Array.from({length:Math.min(2,count-1)},async()=>{
++        while(next<=count){const page=next++;pages[page-1]=await fetchPage(page);}
++      }));
++      const seen=new Set<string>();const items:LibraryItem[]=[],details=new Map<string,VideoDetail>();
++      for(const data of pages){
++        const parsed=parseSearchList(data,source);
++        parsed.forEach((item,i)=>{
++          if(!item.vodId||seen.has(item.vodId))return;seen.add(item.vodId);
++          const raw=data.list[i];
++          try{const detail=parseDetail({list:[raw]},source);if(detail.episodes.length)details.set(item.vodId,detail);}catch{/* Original detail lookup remains the fallback. */}
++          items.push({...item,year:validYear(item.year),summary:clean(raw.vod_content),category:String(raw.type_id??''),
++            tags:clean(raw.vod_tag||raw.vod_class).split(/[,，、]/).filter(Boolean).slice(0,24)});
++        });
++      }
++      const value:Snapshot={items,details,categories:Array.isArray(first.class)?first.class.map((c:Record<string,unknown>)=>({id:String(c.type_id),name:clean(c.type_name)})):[],
++        years:[...new Set(items.map(i=>i.year||'').filter(y=>/^\d{4}$/.test(y)&&y!=='0000'))].sort().reverse()};
++      if(cache.size>=4&&!cache.has(key))cache.delete(cache.keys().next().value!);
++      cache.set(key,{value,expires:Date.now()+60000});return value;
++    })();
++    pending.set(key,task);task.finally(()=>pending.delete(key)).catch(()=>{});return task;
++  };
++  const cached=cache.get(key);
++  if(cached){
++    if(cached.expires>Date.now())return cached.value;
++    // Serve a recently expired snapshot while refreshing; never keep failures indefinitely.
++    if(Date.now()-cached.expires<240000){void load().catch(()=>{});return cached.value;}
++  }
++  return load();
++}
++
++export function selectLibrary(data:Snapshot,params:URLSearchParams):LibraryPage {
++  const query=libraryQuery(params),words=query.q.toLocaleLowerCase().split(/\s+/).filter(Boolean);
++  let items=data.items.filter(item=>(!query.category||item.category===query.category)&&
++    (!query.year||(query.year==='unknown'?!/^\d{4}$/.test(item.year||''):item.year===query.year))&&
++    words.every(word=>[item.name,item.summary,...item.tags].join(' ').toLocaleLowerCase().includes(word)));
++  if(query.sort==='oldest')items=items.reverse();
++  if(query.sort==='name')items.sort((a,b)=>collator.compare(a.name,b.name));
++  if(query.sort==='year')items.sort((a,b)=>Number(b.year||0)-Number(a.year||0));
++  const pageSize=24,total=items.length,pages=Math.max(1,Math.ceil(total/pageSize)),page=Math.min(query.page,pages);
++  return {content:query.content,page,pages,pageSize,total,categories:data.categories,years:data.years,
++    items:items.slice((page-1)*pageSize,page*pageSize)};
++}
++
++export async function readLibrary(params:URLSearchParams):Promise<LibraryPage> {
++  const {content}=libraryQuery(params);
++  const source=getEnvSources().find(s=>Boolean(s.isAdult)===(content==='adult'));
++  if(!source)throw new Error('尚未配置此内容源');
++  return selectLibrary(await snapshot(source),params);
++}
 diff --git a/src/lib/m3u8.ts b/src/lib/m3u8.ts
 index 35d3cce..704bc78 100644
 --- a/src/lib/m3u8.ts
@@ -692,7 +1022,7 @@ index bd60150..fc366ca 100644
  export function validateSourceUrl(url: string): boolean {
 diff --git a/tests/cinema.spec.ts b/tests/cinema.spec.ts
 new file mode 100644
-index 0000000..e3d837a
+index 0000000..b2ff447
 --- /dev/null
 +++ b/tests/cinema.spec.ts
 @@ -0,0 +1,46 @@
@@ -710,7 +1040,7 @@ index 0000000..e3d837a
 + }
 + await expect(page.getByRole('heading',{name:'LibreTV',exact:true})).toBeVisible();
 + await expect(page.getByText('我的网盘影院',{exact:true})).toHaveCount(0);
-+ expect((await context.request.get('/cinema/api/library')).status()).toBe(404);
++
 + const status=await (await context.request.get('/cinema/api/status')).json();
 + expect(status.defaultSources).toHaveLength(2);
 + const general=status.defaultSources.find((s:{isAdult:boolean})=>!s.isAdult);
@@ -739,6 +1069,83 @@ index 0000000..e3d837a
 + await video.evaluate(v=>{(v as HTMLVideoElement).muted=true;return (v as HTMLVideoElement).play()});
 + await expect.poll(()=>video.evaluate(v=>(v as HTMLVideoElement).currentTime),{timeout:45000}).toBeGreaterThan(1);
 + await page.screenshot({path:info.outputPath('original-player.png'),fullPage:true});
++ expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)).toBe(false);
++ expect(errors).toEqual([]);
++});
+diff --git a/tests/library.spec.ts b/tests/library.spec.ts
+new file mode 100644
+index 0000000..602574f
+--- /dev/null
++++ b/tests/library.spec.ts
+@@ -0,0 +1,71 @@
++import {test,expect} from '@playwright/test';
++
++test('cloud posters, scoped switch, global filters, pagination and original player',async({page,context,baseURL,isMobile},info)=>{
++ test.setTimeout(180000);page.setDefaultTimeout(25000);
++ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
++ expect((await context.request.get('/cinema/api/library?content=adult',{maxRetries:2})).status()).toBe(401);
++ if(process.env.CINEMA_TEST_SESSION)await context.addCookies([{name:'ltv_session',value:process.env.CINEMA_TEST_SESSION,url:baseURL!,httpOnly:true,secure:baseURL!.startsWith('https:'),sameSite:'Lax'}]);
++ await page.goto('/cinema');
++ if(!process.env.CINEMA_TEST_SESSION){await page.getByPlaceholder('密码',{exact:true}).fill(process.env.CINEMA_TEST_PASSWORD!);await page.getByRole('button',{name:'进入',exact:true}).click();}
++ await expect(page.getByRole('heading',{name:'LibreTV',exact:true})).toBeVisible();
++ if(isMobile)await page.getByRole('button',{name:'打开菜单',exact:true}).click();
++ await page.getByRole('link',{name:'我的网盘',exact:true}).click();
++ await expect(page).toHaveURL(/\/cinema\/library/);
++ const wall=page.getByRole('region',{name:'影片海报墙'}),cards=wall.getByRole('button');
++ await expect(cards).toHaveCount(24,{timeout:70000});
++ await expect(wall).toHaveAttribute('aria-busy','false');
++ const first=await cards.first().getAttribute('aria-label');
++ expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)).toBe(false);
++ await expect.poll(()=>cards.first().locator('img').evaluate(i=>(i as HTMLImageElement).naturalWidth),{timeout:45000}).toBeGreaterThan(0);
++ await page.screenshot({path:info.outputPath('cloud-library.png'),fullPage:true});
++ const nextButton=page.getByRole('button',{name:'下一页',exact:true});
++ expect((await nextButton.boundingBox())!.height).toBeGreaterThanOrEqual(30);
++ if(isMobile)await page.getByRole('button',{name:'打开菜单',exact:true}).click();
++ await page.getByRole('button',{name:/^切换主题/}).click();await page.getByRole('button',{name:/^切换主题/}).click();
++ await expect.poll(()=>page.evaluate(()=>localStorage.getItem('libretv-theme'))).toBe('light');
++ if(isMobile)await page.getByRole('button',{name:'关闭菜单',exact:true}).click();
++ await page.screenshot({path:info.outputPath('cloud-library-light.png'),fullPage:true});
++ await nextButton.click();
++ await expect(page).toHaveURL(/page=2/);await expect(wall).toHaveAttribute('aria-busy','false');
++ await expect(cards).toHaveCount(24);await expect(cards.first()).not.toHaveAttribute('aria-label',first!);
++ await page.goBack();await expect(page).not.toHaveURL(/page=2/);await expect(cards.first()).toHaveAttribute('aria-label',first!);
++ await page.getByRole('combobox',{name:'排序方式'}).selectOption('oldest');await expect(page).toHaveURL(/sort=oldest/);
++ await expect(wall).toHaveAttribute('aria-busy','false');await expect(cards.first()).not.toHaveAttribute('aria-label',first!);
++ const general=await (await context.request.get('/cinema/api/library')).json();expect(general.total).toBeGreaterThan(24);
++ const categories=general.categories;if(categories.length){
++  await page.getByRole('combobox',{name:'视频类型'}).selectOption(categories[0].id);await expect.poll(()=>new URL(page.url()).searchParams.get('category')).toBe(categories[0].id);
++  await expect(wall).toHaveAttribute('aria-busy','false');
++  const filtered=await (await context.request.get('/cinema/api/library?category='+encodeURIComponent(categories[0].id))).json();
++  expect(filtered.items.every((i:{category:string})=>i.category===categories[0].id)).toBe(true);
++  await page.getByRole('combobox',{name:'视频类型'}).selectOption('');
++ }
++ if(general.years.length){
++  await page.getByRole('combobox',{name:'视频年份'}).selectOption(general.years[0]);await expect.poll(()=>new URL(page.url()).searchParams.get('year')).toBe(general.years[0]);
++  await expect(wall).toHaveAttribute('aria-busy','false');
++  const filtered=await (await context.request.get('/cinema/api/library?year='+general.years[0])).json();
++  expect(filtered.items.every((i:{year:string})=>i.year===general.years[0])).toBe(true);
++  await page.getByRole('combobox',{name:'视频年份'}).selectOption('');
++ }
++ await page.getByRole('button',{name:'成人',exact:true}).click();
++ await expect(page.getByRole('button',{name:'成人',exact:true})).toHaveAttribute('aria-pressed','true');
++ await expect(wall).toHaveAttribute('aria-busy','false',{timeout:70000});
++ const adult=await (await context.request.get('/cinema/api/library?content=adult',{maxRetries:2})).json();
++ expect(adult.total).toBeGreaterThan(0);expect(adult.items.every((i:{isAdult:boolean})=>i.isAdult)).toBe(true);
++ expect(general.items.every((i:{isAdult:boolean})=>!i.isAdult)).toBe(true);
++ await page.getByRole('button',{name:'非成人',exact:true}).click();
++ await expect(page.getByRole('button',{name:'非成人',exact:true})).toHaveAttribute('aria-pressed','true');
++ await page.getByRole('textbox',{name:'搜索网盘视频'}).fill('不存在的影片__qa_zero_result');
++ await page.getByRole('button',{name:'搜索',exact:true}).click();
++ await expect(page.getByText('没有找到对应视频，试试其他关键词或类型。')).toBeVisible();
++ await page.getByRole('textbox',{name:'搜索网盘视频'}).fill('自然泼墨');
++ await page.getByRole('button',{name:'搜索',exact:true}).click();await expect(cards).toHaveCount(1);
++ await cards.first().click();const detail=page.getByRole('dialog');
++ await expect(detail.getByRole('button',{name:'1',exact:true})).toBeVisible();
++ await detail.getByRole('button',{name:'1',exact:true}).click();
++ const video=page.locator('video');await expect(video).toBeVisible();
++ await expect.poll(()=>video.evaluate(v=>(v as HTMLVideoElement).readyState),{timeout:60000}).toBeGreaterThanOrEqual(2);
++ await video.evaluate(v=>{(v as HTMLVideoElement).muted=true;return (v as HTMLVideoElement).play()});
++ await expect.poll(()=>video.evaluate(v=>(v as HTMLVideoElement).currentTime)).toBeGreaterThan(1);
 + expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)).toBe(false);
 + expect(errors).toEqual([]);
 +});
