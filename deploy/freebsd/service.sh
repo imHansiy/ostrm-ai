@@ -33,6 +33,7 @@ case "${1:-status}" in
         start_one ai
         start_one java
         start_one gateway
+        "$PYTHON" deploy/freebsd/launch.py cinema-start
         ;;
     stop) stop_one gateway; stop_one java; stop_one ai ;;
     restart-gateway) stop_one gateway; exec /bin/sh "$0" start ;;

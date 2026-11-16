@@ -1,0 +1,998 @@
+diff --git a/.gitignore b/.gitignore
+index 5396501..2ade53d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -11,4 +11,7 @@ vitest-results.json
+ .mimosa/
+ .zcode/
+ .codebuddy/
+-generated-images/
+\ No newline at end of file
++generated-images/
++test-results/
++playwright-report/
++public/source.zip
+diff --git a/deploy/freebsd/README.md b/deploy/freebsd/README.md
+new file mode 100644
+index 0000000..cba2768
+--- /dev/null
++++ b/deploy/freebsd/README.md
+@@ -0,0 +1,48 @@
++# OpenList 私人网盘影院（FreeBSD 原生）
++
++基于 LibreSpark/LibreTV 2.23.2，固定上游提交 `92461b5e458ba45233e1cba30b09ce0bbc0fa911`。继续遵守 AGPL-3.0-or-later；保留上游 LICENSE 与版权。部署时应在 `/cinema/source.zip` 提供本次构建的完整改造源码（不含 `.env`、凭据、依赖和构建缓存），页脚已提供入口。
++
++本改造以两个管理员配置的 CMS 源构建首页海报墙，不使用豆瓣推荐填充网盘首页。默认非成人，可切换成人；提供关键词、类型、分页、简介和原生播放器。新识别视频随动态源更新，服务端短缓存 15 秒。每页 24 项，封面懒加载，查询去重，缓存最多 80 项。播放原视频，无服务端转码；MP4/WebM 等由浏览器解码，HLS 继续使用原播放器。浏览器不支持的容器或编码需要外部播放器。
++
++## 构建
++
++Node 22，安装依赖后运行：
++
++```sh
++npm ci
++npm test
++NEXT_PUBLIC_BASE_PATH=/cinema NEXT_PUBLIC_OWN_LIBRARY=true DOCKER_BUILD=1 npm run build
++```
++
++`DOCKER_BUILD=1` 在上游配置中仅表示生成 standalone 产物；此流程不运行 Docker。将 `.next/standalone` 的内容复制到应用目录，再复制 `public` 和 `.next/static` 到对应位置；同时复制 `deploy/freebsd/service.sh`。生产环境无需构建工具。跨系统构建必须在目标 FreeBSD 真机验证运行依赖；禁用图片优化可避免依赖 Sharp 本地图片编解码。
++
++创建仅当前用户可读的 `.env`：
++
++```dotenv
++PASSWORD=独立访问密码
++PROXY_SECRET=独立随机服务端密钥
++HOSTNAME=::1
++PORT=43648
++NODE_ENV=production
++COOKIE_SECURE=true
++DEFAULT_SOURCES='[{"name":"网盘 · 非成人","url":"https://你的域名/media/订阅/provider/只读密钥/api.php/provide/vod","isAdult":false},{"name":"网盘 · 成人","url":"https://你的域名/media/订阅/provider/只读密钥/api.php/provide/vod","isAdult":true}]'
++```
++
++来源凭据仅限发布订阅，不能填写 OpenList 管理 Token 或模型密钥。未登录 `/api/status` 不返回来源配置。服务端 `.env` 不得加入源码包或 Git。
++
++```sh
++chmod 600 .env
++/bin/sh deploy/freebsd/service.sh start
++```
++
++默认将 Node 堆限制为 192 MiB；实际 RSS 还含堆外内存。先验证 IPv6 回环可绑定。Serv00 按端口号预留时，可以与绑定在 IPv4 回环上的 Java 共用已预留号码；不可假设其他主机有同样的策略。
++
++反代需保持 `/cinema` 和 `/cinema/…` 原路径，转到 `http://[::1]:43648`，传递 Host、X-Forwarded-Proto、X-Forwarded-For。Next basePath 会处理末尾斜杠，不要在网关再添加相反方向的跳转，避免循环。
++
++配合 OStrm AI 原生启动器时设置 `CINEMA_ENABLED=true`，其网关和自愈任务会接管影院路由与进程启动。单独部署则自行将本服务的 start 添加到用户 cron，不能同时创建重复守护。
++
++## 验收
++
++运行 `tests/cinema.spec.ts` 的 Playwright 用例需设置 `CINEMA_TEST_ORIGIN`（不含 `/cinema`）、`CINEMA_TEST_PASSWORD`，也可提供经过授权生成的短期 HttpOnly 会话 `CINEMA_TEST_SESSION`。Chrome 真机通道可通过 `TEST_CHROME_CHANNEL=chrome` 选择。测试默认读取真实数据，不使用模型响应或假海报；测试成人源时仅验证计数与 ID 隔离，不截取成人画面。
++
++必须同时验证原 OpenList、AI 服务、原订阅不受影响。停止或卸载影院只应处理影院的 daemon、文件和反代位置，不能删除 OpenList 或 AI 数据库。
+diff --git a/deploy/freebsd/service.sh b/deploy/freebsd/service.sh
+new file mode 100644
+index 0000000..ebc4e3d
+--- /dev/null
++++ b/deploy/freebsd/service.sh
+@@ -0,0 +1,29 @@
++#!/bin/sh
++set -eu
++PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin${PATH:+:$PATH}"
++export PATH
++ROOT=$(CDPATH= cd -P "$(dirname "$0")/../.." && pwd)
++RUN="$ROOT/runtime"
++mkdir -p "$RUN"
++cd "$ROOT"
++alive() { /usr/bin/pgrep -L -F "$RUN/supervisor.pid" >/dev/null 2>&1; }
++case "${1:-status}" in
++    start) exec /usr/bin/lockf -s -t 0 "$RUN/start.lock" /bin/sh "$0" _start ;;
++    _start)
++        umask 077
++        if [ -f "$RUN/app.disabled" ] || alive; then exit 0; fi
++        /usr/sbin/daemon -r -R 5 -P "$RUN/supervisor.pid" -p "$RUN/node.pid" -o "$RUN/node.log" -t libretv-cinema \
++            /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin \
++            /usr/local/bin/node --max-old-space-size=192 --env-file="$ROOT/.env" "$ROOT/server.js" </dev/null >/dev/null 2>&1
++        ;;
++    stop)
++        if alive; then
++            /usr/bin/pkill -TERM -L -F "$RUN/supervisor.pid"
++            count=0
++            while alive && [ "$count" -lt 40 ]; do sleep 1; count=$((count+1)); done
++            if alive; then echo 'LibreTV is still stopping' >&2; exit 1; fi
++        fi
++        ;;
++    status) if alive; then echo 'LibreTV supervisor running'; else echo 'LibreTV stopped'; fi ;;
++    *) echo 'Usage: service.sh start|stop|status' >&2; exit 2 ;;
++esac
+diff --git a/next.config.ts b/next.config.ts
+index 0802379..f02cbe3 100644
+--- a/next.config.ts
++++ b/next.config.ts
+@@ -18,6 +18,9 @@ const nextConfig: NextConfig = {
+   // standalone 输出仅供 Docker 镜像构建使用（DOCKER_BUILD=1）；
+   // 本地 next start 在 standalone 模式下不受支持，故按环境切换
+   output: process.env.DOCKER_BUILD === '1' ? 'standalone' : undefined,
++  basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
++  outputFileTracingRoot: process.cwd(),
++  experimental: { cpus: 2 },
+   reactStrictMode: true,
+   env: { APP_VERSION: readAppVersion() },
+   // 采集站/豆瓣等上游地址在运行时由用户配置，构建期无法枚举，关闭图片优化改用 <img>
+diff --git a/package-lock.json b/package-lock.json
+index ede5109..1d86824 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -24,6 +24,7 @@
+         "zustand": "^5.0.2"
+       },
+       "devDependencies": {
++        "@playwright/test": "^1.65.1",
+         "@types/node": "^22.10.0",
+         "@types/react": "^19.0.0",
+         "@types/react-dom": "^19.0.0",
+@@ -1460,6 +1461,22 @@
+         "node": ">=12.4.0"
+       }
+     },
++    "node_modules/@playwright/test": {
++      "version": "1.65.1",
++      "resolved": "https://registry.npmjs.org/@playwright/test/-/test-1.65.1.tgz",
++      "integrity": "sha512-y+NCIRm2LvY4slUVWvGh1nujJ8RF/hEisIsq2mtUPgdQC4L701bq5hZGMhrpeXjACvwvO9tj5dJqhvM6TP9lbw==",
++      "devOptional": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "playwright": "1.65.1"
++      },
++      "bin": {
++        "playwright": "cli.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
+     "node_modules/@rollup/rollup-android-arm-eabi": {
+       "version": "4.63.5",
+       "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.63.5.tgz",
+@@ -6090,6 +6107,35 @@
+         "node": ">= 6"
+       }
+     },
++    "node_modules/playwright": {
++      "version": "1.65.1",
++      "resolved": "https://registry.npmjs.org/playwright/-/playwright-1.65.1.tgz",
++      "integrity": "sha512-vJ1FuoOrNwOKHUIVEvSt3jT1L+wjjDpwhwIstKtfvTh8XIG4FG4bIFuvNdMxi81LGfAhUgUZleVFaOLY4RIUUw==",
++      "devOptional": true,
++      "license": "Apache-2.0",
++      "dependencies": {
++        "playwright-core": "1.65.1"
++      },
++      "bin": {
++        "playwright": "cli.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
++    "node_modules/playwright-core": {
++      "version": "1.65.1",
++      "resolved": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.65.1.tgz",
++      "integrity": "sha512-hqPpz7blSMPxWVdoeE1yiBSzXsKiVOd2k+kjCvmUywD2GPO2Dd9HfcWnq9NN0GHbNZDFgZ9JfBFr+X5/BLo0qw==",
++      "devOptional": true,
++      "license": "Apache-2.0",
++      "bin": {
++        "playwright-core": "cli.js"
++      },
++      "engines": {
++        "node": ">=20"
++      }
++    },
+     "node_modules/possible-typed-array-names": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/possible-typed-array-names/-/possible-typed-array-names-1.1.0.tgz",
+diff --git a/package.json b/package.json
+index 0e2a3ee..7c57013 100644
+--- a/package.json
++++ b/package.json
+@@ -28,6 +28,7 @@
+     "zustand": "^5.0.2"
+   },
+   "devDependencies": {
++    "@playwright/test": "^1.65.1",
+     "@types/node": "^22.10.0",
+     "@types/react": "^19.0.0",
+     "@types/react-dom": "^19.0.0",
+diff --git a/playwright.config.ts b/playwright.config.ts
+new file mode 100644
+index 0000000..54f39e8
+--- /dev/null
++++ b/playwright.config.ts
+@@ -0,0 +1,4 @@
++import {defineConfig} from '@playwright/test';
++export default defineConfig({testDir:'./tests',timeout:120000,expect:{timeout:30000},workers:1,
++  use:{baseURL:process.env.CINEMA_TEST_ORIGIN||'http://127.0.0.1:18081',channel:process.env.TEST_CHROME_CHANNEL||'chrome',trace:'retain-on-failure'},
++  projects:[{name:'desktop',use:{viewport:{width:1440,height:1000}}},{name:'mobile',use:{viewport:{width:390,height:844},isMobile:true,hasTouch:true}}]});
+diff --git a/src/app/api/detail/route.ts b/src/app/api/detail/route.ts
+index c989f70..82f892d 100644
+--- a/src/app/api/detail/route.ts
++++ b/src/app/api/detail/route.ts
+@@ -1,3 +1,4 @@
++import { cmsUrl } from '@/lib/app-path';
+ import { NextResponse } from 'next/server';
+ import { guardRequest } from '@/lib/api-guard';
+ import { cmsRequestHeaders, parseDetail, parseDetailPageHtml } from '@/lib/cms-parser';
+@@ -60,7 +61,7 @@ export async function GET(req: Request) {
+     let resolved: VideoDetail | null = null;
+ 
+     // 1) 标准列表接口
+-    const api = `${source.url.replace(/\/+$/, '')}?ac=videolist&ids=${encodeURIComponent(id)}`;
++    const api = cmsUrl(source.url,{ac:'videolist',ids:id});
+     const res = await fetchUpstream(api, { timeoutMs: 10000, headers: cmsRequestHeaders() });
+     if (res.ok) {
+       const data = await res.json();
+diff --git a/src/app/api/library/route.ts b/src/app/api/library/route.ts
+new file mode 100644
+index 0000000..dc20fab
+--- /dev/null
++++ b/src/app/api/library/route.ts
+@@ -0,0 +1,9 @@
++import { NextResponse } from 'next/server';
++import { guardRequest } from '@/lib/api-guard';
++import { readLibrary } from '@/lib/library';
++export const runtime='nodejs';
++export async function GET(request:Request) {
++  const denied=guardRequest(request);if(denied)return denied;
++  try {return NextResponse.json(await readLibrary(new URL(request.url).searchParams),{headers:{'Cache-Control':'private, no-store'}})}
++  catch {return NextResponse.json({error:'影片资料暂时无法加载，请稍后重试。'},{status:502})}
++}
+diff --git a/src/app/api/search/route.ts b/src/app/api/search/route.ts
+index 1a050ed..2a04ced 100644
+--- a/src/app/api/search/route.ts
++++ b/src/app/api/search/route.ts
+@@ -1,3 +1,4 @@
++import { cmsUrl } from '@/lib/app-path';
+ import { NextResponse } from 'next/server';
+ import { guardRequest } from '@/lib/api-guard';
+ import { cmsRequestHeaders, filterAdultResults, filterRelevantResults, normalizeTitle, parseSearchList } from '@/lib/cms-parser';
+@@ -92,7 +93,7 @@ async function searchSource(source: SourceConfig, wd: string): Promise<SourceSea
+ 
+   const base = source.url.replace(/\/+$/, '');
+   const fetchPage = async (page: number) => {
+-    const api = `${base}?ac=videolist&wd=${encodeURIComponent(wd)}&pg=${page}`;
++    const api = cmsUrl(base,{ac:'videolist',wd,pg:page});
+     const res = await fetchUpstream(api, {
+       timeoutMs: 8000,
+       headers: cmsRequestHeaders(),
+diff --git a/src/app/api/source/test/route.ts b/src/app/api/source/test/route.ts
+index 2d2c28a..e47df19 100644
+--- a/src/app/api/source/test/route.ts
++++ b/src/app/api/source/test/route.ts
+@@ -1,3 +1,4 @@
++import { cmsUrl } from '@/lib/app-path';
+ import { NextResponse } from 'next/server';
+ import { guardRequest } from '@/lib/api-guard';
+ import { checkUpstreamAllowed } from '@/lib/ssrf';
+@@ -29,7 +30,7 @@ export async function POST(req: Request) {
+ 
+   const start = Date.now();
+   try {
+-    const res = await fetchUpstream(`${url}?ac=videolist&wd=test`, {
++    const res = await fetchUpstream(cmsUrl(url,{ac:'videolist',wd:'test'}), {
+       timeoutMs: 6000,
+       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36', Accept: 'application/json' },
+     });
+diff --git a/src/app/api/status/route.ts b/src/app/api/status/route.ts
+index 0ec09d2..6246970 100644
+--- a/src/app/api/status/route.ts
++++ b/src/app/api/status/route.ts
+@@ -18,11 +18,11 @@ export async function GET(req: Request) {
+     // 构建时由 next.config.ts 从 package.json 注入
+     version: process.env.APP_VERSION || 'dev',
+     // 部署者通过 DEFAULT_SOURCES 预置的采集站
+-    defaultSources: getEnvSources(),
++    defaultSources: verified ? getEnvSources() : [],
+     // 部署者通过 DEFAULT_LIVE_SOURCES 预置的直播源（M3U 订阅）
+-    defaultLiveSources: getEnvLiveSources(),
++    defaultLiveSources: verified ? getEnvLiveSources() : [],
+     // 部署者通过 DEFAULT_SUBSCRIPTIONS 预置的 SourceList 订阅链接
+-    defaultSubscriptions: getEnvSubscriptions(),
++    defaultSubscriptions: verified ? getEnvSubscriptions() : [],
+     // 部署者通过 DEFAULT_RECOMMEND_SOURCE 指定的首页推荐数据源默认值（未配置时为 null）
+     defaultRecommendSource: getEnvRecommendSource() ?? null,
+     // 部署者通过 DEFAULT_IMAGE_MODE 指定的封面图加载方式默认值（未配置时为 null）
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index b453f66..7575df9 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -1,25 +1,26 @@
++import { appPath } from '@/lib/app-path';
+ import type { Metadata, Viewport } from 'next';
+ import './globals.css';
+ import { Providers } from '@/components/providers';
+ 
+ export const metadata: Metadata = {
+   title: {
+-    default: 'LibreTV - 免费在线视频搜索与观看平台',
++    default: '网盘影院 · LibreTV',
+     template: '%s - LibreTV',
+   },
+   description:
+     'LibreTV 是一个免费的在线视频搜索平台，无广告、安全，提供来自多个视频源的内容搜索与观看服务，无需注册即可使用。',
+-  manifest: '/manifest.webmanifest',
++  manifest: process.env.NEXT_PUBLIC_BASE_PATH ? undefined : '/manifest.webmanifest',
+   // 图标与门户站（LibreTV-portal）同一套：同一张 artwork 导出的多尺寸 + 根目录 favicon.ico 兜底。
+   // 只声明单张 512 时，抓取端只能拿大图缩放，小尺寸下易糊、看起来「没填满」。
+   icons: {
+     icon: [
+-      { url: '/favicon.ico', sizes: '48x48' },
+-      { url: '/icons/icon-96.png', sizes: '96x96', type: 'image/png' },
+-      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+-      { url: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
++      { url: appPath('/favicon.ico'), sizes: '48x48' },
++      { url: appPath('/icons/icon-96.png'), sizes: '96x96', type: 'image/png' },
++      { url: appPath('/icons/icon-192.png'), sizes: '192x192', type: 'image/png' },
++      { url: appPath('/icons/icon-512.png'), sizes: '512x512', type: 'image/png' },
+     ],
+-    apple: [{ url: '/icons/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
++    apple: [{ url: appPath('/icons/apple-touch-icon.png'), sizes: '180x180', type: 'image/png' }],
+   },
+ };
+ 
+diff --git a/src/app/manifest.ts b/src/app/manifest.ts
+index f460d2d..e89524d 100644
+--- a/src/app/manifest.ts
++++ b/src/app/manifest.ts
+@@ -1,23 +1,24 @@
+ import type { MetadataRoute } from 'next';
++import {appPath} from '@/lib/app-path';
+ 
+ export default function manifest(): MetadataRoute.Manifest {
+   return {
+     name: 'LibreTV - 免费在线视频搜索与观看平台',
+     short_name: 'LibreTV',
+     description: '免费在线视频搜索与观看平台',
+-    start_url: '/',
++    start_url: appPath('/'),
+     display: 'standalone',
+     background_color: '#111111',
+     theme_color: '#0b101a',
+     icons: [
+       {
+-        src: '/icons/icon-192.png',
++        src: appPath('/icons/icon-192.png'),
+         sizes: '192x192',
+         type: 'image/png',
+         purpose: 'any',
+       },
+       {
+-        src: '/icons/icon-512.png',
++        src: appPath('/icons/icon-512.png'),
+         sizes: '512x512',
+         type: 'image/png',
+         purpose: 'any',
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index cd461c3..6128892 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -1,5 +1,6 @@
+ 'use client';
+ 
++import { LibraryWall } from '@/components/library-wall';
+ import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+ import { useRouter, useSearchParams } from 'next/navigation';
+ import { useQuery } from '@tanstack/react-query';
+@@ -25,6 +26,7 @@ import { SiteFooter } from '@/components/site-footer';
+ const RESULT_PAGE_SIZE = 60;
+ 
+ export default function HomePage() {
++  if (process.env.NEXT_PUBLIC_OWN_LIBRARY === 'true') return <Suspense><LibraryWall/></Suspense>;
+   return (
+     <Suspense>
+       <HomeContent />
+diff --git a/src/components/auth.tsx b/src/components/auth.tsx
+index 11e5c38..6504d9a 100644
+--- a/src/components/auth.tsx
++++ b/src/components/auth.tsx
+@@ -4,7 +4,6 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
+ import { useQueryClient } from '@tanstack/react-query';
+ import { api, onUnauthorized, STATUS_QUERY_KEY } from '@/lib/client-api';
+ import { applyEnvPresets } from '@/lib/subscription-sync';
+-import type { AuthStatusResponse } from '@/lib/types';
+ import { useToast } from './toast';
+ 
+ /**
+@@ -100,14 +99,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
+     // 预置订阅（DEFAULT_SUBSCRIPTIONS）的首屏同步发生在登录之前，会 401 静默失败，
+     // 这里用缓存中的 /api/status 补跑一次（缓存缺失时回落为一次请求）
+     try {
+-      const cached = queryClient.getQueryData<AuthStatusResponse>(STATUS_QUERY_KEY);
+-      const status =
+-        cached ??
+-        (await queryClient.fetchQuery<AuthStatusResponse>({
+-          queryKey: STATUS_QUERY_KEY,
+-          queryFn: () => api.status(),
+-          staleTime: 0,
+-        }));
++      const status = await api.status();
++      queryClient.setQueryData(STATUS_QUERY_KEY,status);
+       if (status) await applyEnvPresets(status, { verified: true });
+     } catch {
+       // 补拉预置数据失败不影响登录后的正常使用
+diff --git a/src/components/header.tsx b/src/components/header.tsx
+index 55a5e66..4464f15 100644
+--- a/src/components/header.tsx
++++ b/src/components/header.tsx
+@@ -1,4 +1,5 @@
+ 'use client';
++import { appPath } from '@/lib/app-path';
+ 
+ import Link from 'next/link';
+ import { useState } from 'react';
+@@ -13,6 +14,7 @@ import { cn } from '@/lib/utils';
+ 
+ /** 顶部导航：Logo、搜索框（首页外）、历史、设置 */
+ export function Header({ showSearch = false }: { showSearch?: boolean }) {
++  const openlistHome = process.env.NEXT_PUBLIC_OPENLIST_HOME || '/';
+   const router = useRouter();
+   const pathname = usePathname();
+   const [settingsOpen, setSettingsOpen] = useState(false);
+@@ -46,7 +48,7 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
+         <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-2 sm:gap-3">
+           <Link href="/" aria-label="LibreTV 首页" className="flex items-center shrink-0">
+             {/* eslint-disable-next-line @next/next/no-img-element */}
+-            <img src="/icons/icon-512.png" alt="LibreTV" className="w-7 h-7 rounded-lg" />
++            <img src={appPath('/icons/icon-512.png')} alt="LibreTV" className="w-7 h-7 rounded-lg" />
+           </Link>
+ 
+           {showSearch && (
+@@ -104,6 +106,7 @@ export function Header({ showSearch = false }: { showSearch?: boolean }) {
+ 
+           {/* 桌面 / 平板：完整导航 */}
+           <nav className="hidden sm:flex items-center gap-1 ml-auto">
++            {process.env.NEXT_PUBLIC_OWN_LIBRARY==='true'?<a href={openlistHome} className="px-3 py-2 text-sm text-muted hover:text-accent">返回网盘</a>:null}
+             <HeaderLink href="/live" active={pathname === '/live'}>
+               直播
+             </HeaderLink>
+diff --git a/src/components/library-wall.tsx b/src/components/library-wall.tsx
+new file mode 100644
+index 0000000..9c70949
+--- /dev/null
++++ b/src/components/library-wall.tsx
+@@ -0,0 +1,61 @@
++'use client';
++import { useEffect,useState } from 'react';
++import { useRouter,useSearchParams } from 'next/navigation';
++import { useQuery } from '@tanstack/react-query';
++import { Header } from './header';
++import { SiteFooter } from './site-footer';
++import { DetailModal } from './detail-modal';
++import { useAuth } from './auth';
++import { api } from '@/lib/client-api';
++import { appPath } from '@/lib/app-path';
++import type { LibraryItem,LibraryPage } from '@/lib/library';
++
++export function LibraryWall() {
++  const router=useRouter(),params=useSearchParams();
++  const {verified,checked,openLogin}=useAuth();
++  const content=params.get('content')==='adult'?'adult':'general';
++  const page=Math.max(1,Number(params.get('page'))||1),q=params.get('s')||'',category=params.get('category')||'';
++  const [input,setInput]=useState(q),[detail,setDetail]=useState<LibraryItem|null>(null);
++  useEffect(()=>setInput(q),[q]);
++  const update=(changes:Record<string,string>)=>{const next=new URLSearchParams(params.toString());
++    for(const [k,v]of Object.entries(changes)){if(v)next.set(k,v);else next.delete(k)}
++    router.push('/?'+next.toString(),{scroll:true})};
++  const library=useQuery({queryKey:['own-library',content,page,q,category],enabled:verified,staleTime:15000,
++    queryFn:({signal})=>api.library(new URLSearchParams({content,page:String(page),q,category}),signal) as Promise<LibraryPage>});
++  const data=library.data;
++  return <><Header/><main className="max-w-[1440px] mx-auto px-4 sm:px-8 pb-14">
++    <section className="py-9 sm:py-14 border-b border-line mb-7">
++      <p className="text-accent text-xs font-semibold tracking-[.25em] mb-3">MY ONEDRIVE COLLECTION</p>
++      <div className="flex flex-wrap items-end justify-between gap-5">
++        <div><h1 className="text-3xl sm:text-5xl font-bold tracking-tight">我的网盘影院</h1>
++          <p className="text-muted mt-4 leading-7">收藏在网盘，故事在这里。{data?`共 ${data.total.toLocaleString()} 部视频`:'浏览你的专属视频收藏'}</p></div>
++        <div className="inline-flex rounded-full border border-line p-1 bg-surface" aria-label="内容范围">
++          {(['general','adult']as const).map(v=><button key={v} aria-pressed={content===v} onClick={()=>update({content:v,page:'1',category:''})}
++            className={'rounded-full px-5 py-2 text-sm transition '+(content===v?'bg-accent text-on-accent font-semibold':'text-muted hover:text-content')}>{v==='general'?'非成人':'成人'}</button>)}
++        </div>
++      </div>
++      <form className="flex flex-wrap gap-3 mt-8" onSubmit={e=>{e.preventDefault();update({s:input.trim(),page:'1'})}}>
++        <input aria-label="搜索网盘视频" className="input flex-1 min-w-[180px] h-12" placeholder="搜索片名、标签或简介" value={input} onChange={e=>setInput(e.target.value)}/>
++        <select aria-label="视频类型" className="input max-w-[170px]" value={category} onChange={e=>update({category:e.target.value,page:'1'})}>
++          <option value="">全部类型</option>{data?.categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
++        </select><button className="btn-primary px-6" type="submit">搜索</button>
++      </form>
++    </section>
++    {!verified&&checked?<div className="rounded-2xl border border-line bg-surface p-12 text-center"><h2 className="text-xl font-semibold mb-3">登录你的私人影院</h2><p className="text-muted mb-6">登录后浏览网盘中的影片、简介与收藏。</p><button className="btn-primary" onClick={openLogin}>登录影院</button></div>:<>
++      <div className="flex justify-between items-center text-sm text-muted mb-5"><span>{q?`“${q}”的搜索结果`:'全部收藏'}{data?` · ${data.total.toLocaleString()} 部`:''}</span><span>每页 24 部</span></div>
++      {library.isError?<div role="alert" className="p-8 rounded-xl border border-line text-center"><p>暂时无法加载影片</p><button className="btn-secondary mt-4" onClick={()=>library.refetch()}>重试</button></div>:null}
++      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-x-4 gap-y-7 sm:gap-x-5" aria-label="影片海报墙" aria-busy={library.isFetching}>
++        {(!checked||library.isPending)?Array.from({length:24},(_,i)=><div key={i} className="aspect-[2/3] rounded-xl bg-surface animate-pulse"/>):data?.items.map(item=><button key={item.sourceKey+item.vodId} onClick={()=>setDetail(item)} className="group text-left min-w-0 self-start" aria-label={'查看详情：'+item.name}>
++          <div className="relative aspect-[2/3] overflow-hidden rounded-xl bg-surface border border-line shadow-sm transition duration-300 group-hover:-translate-y-1 group-hover:shadow-xl">
++            {/* eslint-disable-next-line @next/next/no-img-element */}
++            <img src={item.pic||appPath('/icons/icon-512.png')} alt={item.name} loading="lazy" decoding="async" className="h-full w-full object-cover transition duration-500 group-hover:scale-105" onError={e=>{e.currentTarget.onerror=null;e.currentTarget.src=appPath('/icons/icon-512.png')}}/>
++            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/10 to-transparent opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition p-4 flex flex-col justify-end"><p className="text-white/90 text-xs leading-6 line-clamp-5">{item.summary||'查看影片详情'}</p><span className="text-white font-semibold mt-3 text-sm">查看详情 →</span></div>
++            {item.year&&item.year!=='0'?<span className="absolute left-2 top-2 px-2 py-1 text-xs rounded-md bg-black/65 text-white">{item.year}</span>:null}
++          </div><h2 className="mt-3 text-sm font-semibold line-clamp-2 leading-6 min-h-12 break-all group-hover:text-accent">{item.name}</h2><p className="text-xs text-muted mt-1 truncate">{item.tags.slice(0,3).join(' · ')||item.typeName||'视频'}</p>
++        </button>)}
++      </div>
++      {data&&!data.items.length?<div className="text-center py-20 text-muted">没有找到对应视频，试试其他关键词或类型。</div>:null}
++      {data&&data.pages>1?<nav aria-label="视频分页" className="flex flex-wrap gap-3 justify-center items-center mt-10"><button className="btn-secondary" disabled={page<=1} onClick={()=>update({page:String(page-1)})}>上一页</button><span className="text-sm text-muted">第 {page} / {data.pages} 页</span><button className="btn-secondary" disabled={page>=data.pages} onClick={()=>update({page:String(page+1)})}>下一页</button></nav>:null}
++    </>}
++  </main><SiteFooter/><DetailModal item={detail} onClose={()=>setDetail(null)}/></>;
++}
+diff --git a/src/components/live-player.tsx b/src/components/live-player.tsx
+index ddfdf56..c3ce5f5 100644
+--- a/src/components/live-player.tsx
++++ b/src/components/live-player.tsx
+@@ -1,4 +1,5 @@
+ 'use client';
++import { appPath } from '@/lib/app-path';
+ 
+ import { useEffect, useRef, useState } from 'react';
+ import Artplayer from 'artplayer';
+@@ -19,9 +20,9 @@ import { attachVolumeBoost, type VolumeBoostHandle } from '@/lib/volume-boost';
+  */
+ 
+ /** 代理地址前缀（新旧形式 /api/live/stream/… 与 /api/live/stream?url=… 的共同前缀，用于防二次代理） */
+-const STREAM_PROXY_PREFIX = '/api/live/stream';
++const STREAM_PROXY_PREFIX = appPath('/api/live/stream');
+ /** 代理地址（查询串形式：路径里的 %2F 会被 EdgeOne 等网关归一化，查询串不受影响） */
+-const STREAM_PROXY_BASE = '/api/live/stream?url=';
++const STREAM_PROXY_BASE = appPath('/api/live/stream?url=');
+ 
+ export function isFlvUrl(url: string): boolean {
+   return /\.flv(\?|$)/i.test(url);
+diff --git a/src/components/player-shell.tsx b/src/components/player-shell.tsx
+index cf686c1..bc7120a 100644
+--- a/src/components/player-shell.tsx
++++ b/src/components/player-shell.tsx
+@@ -1,4 +1,6 @@
+ 'use client';
++import { appPath } from '@/lib/app-path';
++import { isDirectMediaUrl } from '@/lib/media-format';
+ 
+ import { useEffect, useRef, useState } from 'react';
+ import Artplayer from 'artplayer';
+@@ -235,6 +237,7 @@ export function PlayerShell({
+ 
+   // 当前集预取（episodeKey 缺省 = 关闭，见 ensure 内部 settings.enabled 判断）
+   const ensurePrefetch = (mediaUrl: string, currentTime: number, horizonSeconds?: number) => {
++    if (isDirectMediaUrl(mediaUrl)) return;
+     const p = propsRef.current;
+     if (!p.episodeKey) return;
+     getVideoPrefetcher().ensure({
+@@ -363,7 +366,27 @@ export function PlayerShell({
+     restoreCleanupRef.current?.();
+     restoreCleanupRef.current = null;
+     hlsRef.current?.destroy();
++    hlsRef.current = null;
+     currentMediaUrlRef.current = mediaUrl;
++    if (isDirectMediaUrl(mediaUrl)) {
++      // Native file playback must not fetch a whole MP4 as an HLS manifest.
++      video.removeAttribute('crossorigin');
++      const restore = async () => {
++        if (restoredRef.current || !Number.isFinite(video.duration)) return;
++        restoredRef.current = true;
++        try {
++          const saved=(await propsRef.current.getRestorePosition?.())||0;
++          if(saved>10&&saved<video.duration-2)video.currentTime=saved;
++        } catch { /* A local history failure must not block playback. */ }
++        recoveryRef.current?.markHealthy();
++        mediaHealthyRef.current=true;
++        video.play().catch(()=>{});
++      };
++      video.addEventListener('loadedmetadata',restore);
++      restoreCleanupRef.current=()=>video.removeEventListener('loadedmetadata',restore);
++      video.src=mediaUrl;video.load();
++      return;
++    }
+     const hls = new Hls(buildHlsConfig());
+     hlsRef.current = hls;
+ 
+@@ -444,11 +467,11 @@ export function PlayerShell({
+           // （同源 cookie 鉴权，规避 CORS/防盗链/分片被拒）
+           if (
+             allowProxyFallback &&
+-            !mediaUrl.startsWith('/api/proxy') &&
++            !mediaUrl.startsWith(appPath('/api/proxy')) &&
+             (decision.attempt >= 2 || data.details === 'manifestLoadError')
+           ) {
+             showHint('直连失败，改用代理重试...');
+-            setupHls(video, `/api/proxy?url=${encodeURIComponent(mediaUrl)}`, false);
++            setupHls(video, appPath(`/api/proxy?url=${encodeURIComponent(mediaUrl)}`), false);
+             return;
+           }
+           showHint(`${decision.reason}（第 ${decision.attempt} 次）...`);
+@@ -533,7 +556,7 @@ export function PlayerShell({
+       autoplay: true,
+       pip: true,
+       autoMini: true,
+-      screenshot: true,
++      screenshot: !isDirectMediaUrl(initialUrl),
+       setting: true,
+       playbackRate: true,
+       aspectRatio: true,
+@@ -552,7 +575,7 @@ export function PlayerShell({
+       hotkey: false,
+       theme: '#2563eb',
+       lang: navigator.language.toLowerCase().startsWith('zh') ? 'zh-cn' : 'en',
+-      moreVideoAttr: { crossOrigin: 'anonymous', playsInline: true },
++      moreVideoAttr: { ...(isDirectMediaUrl(initialUrl)?{}:{crossOrigin:'anonymous'}), playsInline: true },
+       // 上/下集放在播放键右侧：换集是看剧最高频的动作，不该让用户滚回页面下方找按钮
+       controls: [
+         {
+diff --git a/src/components/site-footer.tsx b/src/components/site-footer.tsx
+index 3665ce9..e8ee8c3 100644
+--- a/src/components/site-footer.tsx
++++ b/src/components/site-footer.tsx
+@@ -2,6 +2,7 @@
+ 
+ import { useEffect, useState } from 'react';
+ import { useAuth } from '@/components/auth';
++import {appPath} from '@/lib/app-path';
+ 
+ /** 上游仓库最新 tag（即最新版本号），用于页脚的更新检测 */
+ const UPSTREAM_TAGS_API = 'https://api.github.com/repos/LibreSpark/LibreTV/tags?per_page=1';
+@@ -103,6 +104,7 @@ export function SiteFooter() {
+         </a>
+         {' · '}
+         AGPL-3.0 License
++        {process.env.NEXT_PUBLIC_OWN_LIBRARY==='true'?<>{' · '}<a className="hover:text-accent" href={appPath('/source.zip')}>本站改造源码</a></>:null}
+       </p>
+     </footer>
+   );
+diff --git a/src/lib/app-path.test.ts b/src/lib/app-path.test.ts
+new file mode 100644
+index 0000000..1c97454
+--- /dev/null
++++ b/src/lib/app-path.test.ts
+@@ -0,0 +1,15 @@
++import {afterEach,it,expect,vi} from 'vitest';
++import {appPath,cmsUrl} from './app-path';
++afterEach(()=>vi.unstubAllEnvs());
++it('prefixes API and image routes once without modifying external URLs',()=>{
++  vi.stubEnv('NEXT_PUBLIC_BASE_PATH','/cinema');
++  expect(appPath('/api/library')).toBe('/cinema/api/library');
++  expect(appPath('/cinema/api/library')).toBe('/cinema/api/library');
++  expect(appPath('https://example.com/a')).toBe('https://example.com/a');
++  vi.stubEnv('NEXT_PUBLIC_BASE_PATH','');expect(appPath('/api/library')).toBe('/api/library');
++});
++it('preserves publication keys and safely replaces CMS query fields',()=>{
++  const u=new URL(cmsUrl('https://example.com/api?key=abc&pg=1',{pg:2,wd:'中文影片',ac:'videolist'}));
++  expect(u.searchParams.get('key')).toBe('abc');expect(u.searchParams.get('pg')).toBe('2');
++  expect(u.searchParams.get('wd')).toBe('中文影片');expect(u.searchParams.getAll('pg')).toHaveLength(1);
++});
+diff --git a/src/lib/app-path.ts b/src/lib/app-path.ts
+new file mode 100644
+index 0000000..04f962b
+--- /dev/null
++++ b/src/lib/app-path.ts
+@@ -0,0 +1,12 @@
++/** Native reverse-proxy mount; Next links/router already apply basePath themselves. */
++export function appPath(value: string): string {
++  const base = process.env.NEXT_PUBLIC_BASE_PATH || '';
++  if (!value.startsWith('/') || value.startsWith('//') || value === base || value.startsWith(base + '/')) return value;
++  return base + value;
++}
++
++export function cmsUrl(base: string, params: Record<string, string | number>): string {
++  const url = new URL(base);
++  for (const [key,value] of Object.entries(params)) url.searchParams.set(key,String(value));
++  return url.toString();
++}
+diff --git a/src/lib/client-api.ts b/src/lib/client-api.ts
+index 8237197..8753051 100644
+--- a/src/lib/client-api.ts
++++ b/src/lib/client-api.ts
+@@ -1,4 +1,6 @@
+ 'use client';
++import { appPath } from './app-path';
++import type { LibraryPage } from './library';
+ 
+ import type { SearchResponse, SearchStreamEvent, SourceSearchOutcome, VideoDetail, DoubanResponse, BangumiCalendarResponse, AuthStatusResponse, SourceConfig, SearchResultItem, LivePlaylistResponse, LiveEpgResponse, SourceListPayload, QualityProbeItem, QualityProbeResult } from './types';
+ 
+@@ -88,7 +90,7 @@ async function consumeNdjson<T>(res: Response, onEvent: (event: T) => void): Pro
+ async function request<T>(url: string, init?: RequestInit): Promise<T> {
+   let res: Response;
+   try {
+-    res = await fetch(url, init);
++    res = await fetch(appPath(url), init);
+   } catch (err) {
+     if (err instanceof DOMException && err.name === 'AbortError') throw err;
+     throw new ApiError('网络请求失败，请检查网络连接', 0);
+@@ -106,6 +108,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
+ }
+ 
+ export const api = {
++  library: (params:URLSearchParams,signal?:AbortSignal)=>request<LibraryPage>('/api/library?'+params.toString(),{signal}),
+   status: () => request<AuthStatusResponse>('/api/status'),
+ 
+   login: (password: string) =>
+@@ -161,7 +164,7 @@ export const api = {
+   ): Promise<void> => {
+     let res: Response;
+     try {
+-      res = await fetch('/api/quality?stream=1', {
++      res = await fetch(appPath('/api/quality?stream=1'), {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ items }),
+@@ -277,7 +280,7 @@ export const api = {
+   /** 订阅导出（.m3u）下载地址 */
+   liveExportUrl: (url: string) => {
+     const sp = new URLSearchParams({ url, format: 'm3u' });
+-    return `/api/live/playlist?${sp.toString()}`;
++    return appPath(`/api/live/playlist?${sp.toString()}`);
+   },
+ 
+   /** 批量测活：分片级探测频道可达性与延迟（单批最多 50 条） */
+@@ -301,7 +304,7 @@ export const api = {
+     onResult: (result: LiveProbeResult) => void,
+     signal?: AbortSignal
+   ): Promise<void> => {
+-    const res = await fetch('/api/live/probe?stream=1', {
++    const res = await fetch(appPath('/api/live/probe?stream=1'), {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ urls }),
+@@ -328,7 +331,7 @@ async function searchStream(
+   onSource: (outcome: SourceSearchOutcome) => void,
+   signal?: AbortSignal
+ ): Promise<SearchResponse> {
+-  const res = await fetch('/api/search?stream=1', {
++  const res = await fetch(appPath('/api/search?stream=1'), {
+     method: 'POST',
+     headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ wd, sources, filterAdult }),
+diff --git a/src/lib/library.test.ts b/src/lib/library.test.ts
+new file mode 100644
+index 0000000..f863cdd
+--- /dev/null
++++ b/src/lib/library.test.ts
+@@ -0,0 +1,36 @@
++import { beforeEach,afterEach,describe,it,expect,vi } from 'vitest';
++vi.mock('./env-sources',()=>({getEnvSources:()=>[
++  {key:'general',name:'非成人',url:'https://media.example/general?key=read-only',isAdult:false},
++  {key:'adult',name:'成人',url:'https://media.example/adult?key=other-read-only',isAdult:true},
++]}));
++describe('private media library',()=>{
++  beforeEach(()=>{vi.resetModules()});afterEach(()=>vi.unstubAllGlobals());
++  it('keeps scopes separate, preserves credentials and exposes Chinese metadata',async()=>{
++    const fetch=vi.fn(async(url:string)=>new Response(JSON.stringify({code:1,page:1,pagecount:3,total:60,
++      class:[{type_id:1,type_name:'电影'}],list:[{vod_id:url.includes('/adult')?'adult-id':'general-id',vod_name:'测试影片',
++      vod_content:'<p>真实画面简介</p>',vod_tag:'旅行,城市',vod_pic:'https://image.example/cover.jpg'}]})));
++    vi.stubGlobal('fetch',fetch);
++    const {readLibrary}=await import('./library');
++    const general=await readLibrary(new URLSearchParams('content=general'));
++    const adult=await readLibrary(new URLSearchParams('content=adult'));
++    expect(general.items[0].vodId).toBe('general-id');expect(adult.items[0].vodId).toBe('adult-id');
++    expect(general.items[0].summary).toBe('真实画面简介');expect(general.items[0].tags).toEqual(['旅行','城市']);
++    const url=new URL(fetch.mock.calls[0][0]);expect(url.searchParams.get('key')).toBe('read-only');
++    expect(url.searchParams.get('limit')).toBe('24');expect(general.pages).toBe(3);
++    await readLibrary(new URLSearchParams('content=general'));expect(fetch).toHaveBeenCalledTimes(2);
++  });
++  it('coalesces simultaneous page requests and passes search/category/pagination',async()=>{
++    const fetch=vi.fn(async(url:string)=>{expect(url).toContain('media.example');return new Response(JSON.stringify({code:1,page:2,pagecount:2,total:30,list:[]}))});
++    vi.stubGlobal('fetch',fetch);const {readLibrary}=await import('./library');
++    const query=new URLSearchParams('q=花卉&category=3&page=2');
++    await Promise.all([readLibrary(query),readLibrary(query)]);expect(fetch).toHaveBeenCalledTimes(1);
++    const url=new URL(String(fetch.mock.calls[0][0]));expect(url.searchParams.get('wd')).toBe('花卉');
++    expect(url.searchParams.get('t')).toBe('3');expect(url.searchParams.get('pg')).toBe('2');
++  });
++  it('bounds malformed input and defaults to non-adult content',async()=>{
++    const {libraryQuery}=await import('./library');
++    expect(libraryQuery(new URLSearchParams('content=anything&page=-1')).content).toBe('general');
++    expect(libraryQuery(new URLSearchParams('page=-1')).page).toBe(1);
++    expect(libraryQuery(new URLSearchParams({q:'a'.repeat(500)})).q.length).toBe(100);
++  });
++});
+diff --git a/src/lib/library.ts b/src/lib/library.ts
+new file mode 100644
+index 0000000..c135193
+--- /dev/null
++++ b/src/lib/library.ts
+@@ -0,0 +1,47 @@
++import { getEnvSources } from './env-sources';
++import { parseSearchList } from './cms-parser';
++import { cmsUrl } from './app-path';
++import type { SearchResultItem } from './types';
++
++export interface LibraryItem extends SearchResultItem { summary: string; tags: string[] }
++export interface LibraryPage {
++  items: LibraryItem[]; total: number; page: number; pages: number;
++  categories: { id: string; name: string }[]; content: 'general'|'adult';
++}
++type Entry={value:LibraryPage;expires:number};
++const cache=new Map<string,Entry>();
++const pending=new Map<string,Promise<LibraryPage>>();
++export function libraryQuery(params:URLSearchParams) {
++  const content=params.get('content')==='adult'?'adult':'general';
++  const raw=Number(params.get('page')||1);
++  const page=Number.isInteger(raw)&&raw>0?Math.min(raw,100000):1;
++  return {content,page,q:(params.get('q')||'').trim().slice(0,100),category:(params.get('category')||'').slice(0,50)} as const;
++}
++export async function readLibrary(params:URLSearchParams):Promise<LibraryPage> {
++  const query=libraryQuery(params);
++  const source=getEnvSources().find(s=>Boolean(s.isAdult)===(query.content==='adult'));
++  if (!source) throw new Error('尚未配置此内容源');
++  const key=JSON.stringify([source.url,query]);
++  const cached=cache.get(key);
++  if (cached && cached.expires>Date.now()) return cached.value;
++  if(pending.has(key)) return pending.get(key)!;
++  const load=(async()=>{
++    const url=cmsUrl(source.url,{ac:'videolist',pg:query.page,limit:24,wd:query.q,...(query.category?{t:query.category}:{})});
++    // Sources are administrator-defined env values; users never supply a fetch URL.
++    const response=await fetch(url,{signal:AbortSignal.timeout(20000),cache:'no-store'});
++    if(!response.ok)throw new Error('媒体源暂时无法访问');
++    const data=await response.json();
++    if(data.code!==1 || !Array.isArray(data.list))throw new Error('媒体源返回了无效数据');
++    const clean=(s:unknown)=>String(s||'').replace(/<[^>]*>/g,'').trim();
++    const parsed=parseSearchList(data,source);
++    const value:LibraryPage={content:query.content,page:Number(data.page)||query.page,
++      pages:Math.max(1,Number(data.pagecount)||1),total:Math.max(0,Number(data.total)||0),
++      categories:Array.isArray(data.class)?data.class.map((c:Record<string,unknown>)=>({id:String(c.type_id),name:clean(c.type_name)})):[],
++      items:parsed.map((item,i)=>({...item,summary:clean(data.list[i].vod_content),
++        tags:clean(data.list[i].vod_tag||data.list[i].vod_class).split(/[,，、]/).filter(Boolean).slice(0,6)}))};
++    if(cache.size>=80)cache.delete(cache.keys().next().value!);
++    cache.set(key,{value,expires:Date.now()+15000});return value;
++  })();
++  pending.set(key,load);
++  try{return await load}finally{pending.delete(key)}
++}
+diff --git a/src/lib/m3u8.ts b/src/lib/m3u8.ts
+index 35d3cce..704bc78 100644
+--- a/src/lib/m3u8.ts
++++ b/src/lib/m3u8.ts
+@@ -1,3 +1,4 @@
++import { appPath } from '@/lib/app-path';
+ /**
+  * m3u8 处理：代理路径重写与广告分片过滤
+  *
+@@ -7,13 +8,13 @@
+  */
+ 
+ /** 点播代理地址（查询串形式，路径形式会被 EdgeOne 等网关的 URL 归一化破坏，见 proxy-handlers.ts） */
+-export const PROXY_BASE = '/api/proxy?url=';
++export const PROXY_BASE = appPath('/api/proxy?url=');
+ /** 直播流代理地址（查询串形式） */
+-export const LIVE_STREAM_BASE = '/api/live/stream?url=';
++export const LIVE_STREAM_BASE = appPath('/api/live/stream?url=');
+ 
+ /** URI 已是本站代理地址（新旧两种形式：/api/proxy/…、/api/proxy?url=…、/api/live/stream/…、/api/live/stream?url=…）时不再二次改写 */
+ export function isProxiedUri(uri: string): boolean {
+-  return uri.startsWith('/api/proxy') || uri.startsWith('/api/live/stream');
++  return uri.startsWith(appPath('/api/proxy')) || uri.startsWith(appPath('/api/live/stream'));
+ }
+ 
+ /**
+diff --git a/src/lib/media-format.test.ts b/src/lib/media-format.test.ts
+new file mode 100644
+index 0000000..79d4e85
+--- /dev/null
++++ b/src/lib/media-format.test.ts
+@@ -0,0 +1,8 @@
++import {it,expect} from 'vitest';
++import {isDirectMediaUrl} from './media-format';
++it('treats signed original files as native video while preserving HLS playback',()=>{
++  expect(isDirectMediaUrl('https://pan.example/media/'+'a'.repeat(32)+'/stream/123/%E8%8A%B1.mp4?key=abc')).toBe(true);
++  expect(isDirectMediaUrl('https://cdn.example/movie.webm?x=1')).toBe(true);
++  expect(isDirectMediaUrl('https://cdn.example/video.m3u8?key=abc')).toBe(false);
++  expect(isDirectMediaUrl('/api/proxy?url=https%3A%2F%2Fcdn.example%2Fa.m3u8')).toBe(false);
++});
+diff --git a/src/lib/media-format.ts b/src/lib/media-format.ts
+new file mode 100644
+index 0000000..79316f3
+--- /dev/null
++++ b/src/lib/media-format.ts
+@@ -0,0 +1,7 @@
++/** Our media resolver returns an original file, rather than an HLS manifest. */
++export function isDirectMediaUrl(value:string):boolean {
++  try {
++    const path=decodeURIComponent(new URL(value,'https://local.invalid').pathname);
++    return /\.(mp4|m4v|mov|webm|mkv|avi|ts|flv)$/i.test(path) || /^\/media\/[a-f0-9]{32}\/stream\//.test(path);
++  } catch {return false}
++}
+diff --git a/src/lib/quality-probe.ts b/src/lib/quality-probe.ts
+index 519e477..cf67709 100644
+--- a/src/lib/quality-probe.ts
++++ b/src/lib/quality-probe.ts
+@@ -1,3 +1,4 @@
++import { cmsUrl } from '@/lib/app-path';
+ import {
+   decryptAes128CbcPrefix,
+   looksLikeMp4,
+@@ -276,7 +277,7 @@ async function probeSegmentResolution(
+ 
+ /** 取影片的播放地址列表（与 /api/detail 同逻辑：列表接口优先，拿不到再爬详情页） */
+ async function fetchEpisodes(source: SourceConfig, id: string, signal: AbortSignal): Promise<string[]> {
+-  const api = `${source.url.replace(/\/+$/, '')}?ac=videolist&ids=${encodeURIComponent(id)}`;
++  const api = cmsUrl(source.url,{ac:'videolist',ids:id});
+   const res = await fetchUpstream(api, { timeoutMs: 6000, headers: cmsRequestHeaders(), signal });
+   if (res.ok) {
+     try {
+diff --git a/src/lib/utils.ts b/src/lib/utils.ts
+index bd60150..fc366ca 100644
+--- a/src/lib/utils.ts
++++ b/src/lib/utils.ts
+@@ -1,3 +1,4 @@
++import { appPath } from '@/lib/app-path';
+ export function cn(...classes: (string | false | null | undefined)[]): string {
+   return classes.filter(Boolean).join(' ');
+ }
+@@ -41,7 +42,7 @@ export function buildImageUrl(
+   customTemplate: string
+ ): string | undefined {
+   if (!url) return undefined;
+-  if (mode === 'proxy') return `/api/proxy?url=${encodeURIComponent(url)}`;
++  if (mode === 'proxy') return appPath(`/api/proxy?url=${encodeURIComponent(url)}`);
+   if (mode === 'custom' && customTemplate) {
+     return customTemplate.includes('{url}')
+       ? customTemplate.replace('{url}', encodeURIComponent(url))
+@@ -76,7 +77,7 @@ export function buildImageCandidates(
+     return [...new Set([built, ...mirrors, url])];
+   }
+   if (mode !== 'direct') return [built];
+-  return [...new Set([built, ...mirrors, `/api/proxy?url=${encodeURIComponent(url)}`])];
++  return [...new Set([built, ...mirrors, appPath(`/api/proxy?url=${encodeURIComponent(url)}`)])];
+ }
+ 
+ export function validateSourceUrl(url: string): boolean {
+diff --git a/tests/cinema.spec.ts b/tests/cinema.spec.ts
+new file mode 100644
+index 0000000..4fdb1a3
+--- /dev/null
++++ b/tests/cinema.spec.ts
+@@ -0,0 +1,57 @@
++import {test,expect} from '@playwright/test';
++test('private poster wall, separated sources, search, details and real video playback',async({page,context,baseURL},info)=>{
++  const errors:string[]=[];
++  page.on('pageerror',e=>errors.push(e.message));
++  const anonymous=await context.request.get('/cinema/api/library?content=adult');expect(anonymous.status()).toBe(401);
++  const status=await context.request.get('/cinema/api/status');expect((await status.json()).defaultSources).toEqual([]);
++  if(process.env.CINEMA_TEST_SESSION)await context.addCookies([{name:'ltv_session',value:process.env.CINEMA_TEST_SESSION,url:baseURL!,httpOnly:true,secure:baseURL!.startsWith('https:'),sameSite:'Lax'}]);
++  await page.goto('/cinema');
++  if(!process.env.CINEMA_TEST_SESSION){
++    await page.getByRole('button',{name:'登录影院',exact:true}).click();
++    await page.getByPlaceholder('密码',{exact:true}).fill(process.env.CINEMA_TEST_PASSWORD!);
++    await page.getByRole('button',{name:'进入',exact:true}).click();
++  }
++  await expect(page.getByRole('heading',{name:'我的网盘影院',exact:true})).toBeVisible();
++  const wall=page.getByLabel('影片海报墙');
++  await expect(wall.getByRole('button')).toHaveCount(24);
++  await expect.poll(()=>wall.locator('img').first().evaluate(img=>(img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
++  expect(await wall.locator('img').first().getAttribute('src')).toContain('/media/');
++  await expect(page.getByRole('button',{name:'非成人',exact:true})).toHaveAttribute('aria-pressed','true');
++  const general=await (await context.request.get('/cinema/api/library?content=general')).json();
++  const adult=await (await context.request.get('/cinema/api/library?content=adult')).json();
++  expect(general.total).toBeGreaterThan(0);expect(adult.total).toBeGreaterThan(0);
++  expect(general.items.every((x:{vodId:string})=>!adult.items.some((a:{vodId:string})=>a.vodId===x.vodId))).toBeTruthy();
++  await page.getByRole('button',{name:'成人',exact:true}).click();
++  await expect(page.getByRole('button',{name:'成人',exact:true})).toHaveAttribute('aria-pressed','true');
++  await expect(wall.getByRole('button')).toHaveCount(24);
++  await page.getByRole('button',{name:'非成人',exact:true}).click();
++  await expect(page.getByRole('button',{name:'非成人',exact:true})).toHaveAttribute('aria-pressed','true');
++  await expect(wall.getByRole('button')).toHaveCount(24);
++  await page.getByRole('button',{name:'下一页',exact:true}).click();
++  await expect(page).toHaveURL(/page=2/);await expect(wall.getByRole('button')).toHaveCount(24);
++  await expect.poll(()=>page.evaluate(()=>scrollY)).toBeLessThan(10);
++  await page.getByRole('button',{name:'上一页',exact:true}).click();
++  await expect(page).toHaveURL(/page=1/);
++  await page.screenshot({path:info.outputPath('poster-wall.png'),fullPage:true});
++  await page.evaluate(()=>localStorage.setItem('libretv-theme','light'));
++  await page.reload();await expect(wall.getByRole('button')).toHaveCount(24);
++  await page.evaluate(()=>scrollTo(0,0));
++  await expect.poll(()=>wall.locator('img').first().evaluate(img=>(img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
++  await page.screenshot({path:info.outputPath('poster-wall-light.png'),fullPage:true});
++  await page.getByLabel('搜索网盘视频').fill('自然泼墨');
++  await page.getByRole('button',{name:'搜索',exact:true}).click();
++  await expect(wall.getByRole('button')).toHaveCount(1);
++  await wall.getByRole('button').first().click();
++  const detail=page.getByRole('dialog');await expect(detail).toBeVisible();
++  await expect(detail.getByRole('button',{name:'1',exact:true})).toBeVisible();
++  await detail.getByRole('button',{name:'1',exact:true}).click();
++  await expect(page).toHaveURL(/\/cinema\/watch/);
++  const video=page.locator('video');await expect(video).toBeVisible();
++  await expect.poll(()=>video.evaluate(v=>{const video=v as HTMLVideoElement;return video.readyState>=2&&Number.isFinite(video.duration)&&video.duration>0}),{timeout:60000}).toBe(true);
++  await video.evaluate(v=>{(v as HTMLVideoElement).muted=true;return (v as HTMLVideoElement).play()});
++  await expect.poll(()=>video.evaluate(v=>(v as HTMLVideoElement).currentTime),{timeout:45000}).toBeGreaterThan(1);
++  expect(await video.evaluate(v=>Boolean((v as HTMLVideoElement).error))).toBe(false);
++  await page.screenshot({path:info.outputPath('native-playback.png'),fullPage:true});
++  expect(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth+2)).toBe(false);
++  expect(errors).toEqual([]);
++});

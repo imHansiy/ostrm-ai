@@ -38,6 +38,16 @@ def test_three_endpoint_staging_uses_one_reserved_number(tmp_path):
     assert 'http://127.0.0.2:43648' in conf and 'http://127.0.0.1:43648/api/' in conf
 
 
+def test_optional_cinema_keeps_openlist_and_ai_routes_separate(tmp_path):
+    result=prepare(tmp_path,CINEMA_ENABLED='true')
+    assert result.returncode==0,result.stderr
+    conf=(tmp_path/'runtime/nginx.conf').read_text(encoding='utf-8')
+    assert 'location ~ ^/cinema(?:/|$)' in conf
+    assert 'proxy_pass http://[::1]:43648' in conf
+    assert 'location /ostrm/api/' in conf and 'location /ai/' in conf
+    assert '@CINEMA_LOCATION@' not in conf
+
+
 @pytest.mark.parametrize('options',[{'NATIVE_AI_HOST':'0.0.0.0'},{'NATIVE_APP_PREFIX':'/bad;prefix'},
                                     {'NATIVE_GATEWAY_PORT':'80'},{'OPENLIST_URL':'http://user:password@localhost:5244'}])
 def test_invalid_runtime_configuration_fails_before_start(tmp_path,options):

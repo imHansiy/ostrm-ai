@@ -69,6 +69,7 @@ http {
         listen @GATEWAY_HOST@:@GATEWAY@;
         server_name _;
         absolute_redirect off;
+        @CINEMA_LOCATION@
         client_max_body_size 0;
         if ($arg_ai = video-tags) { return 302 @PREFIX@ai-center?tab=$arg_view; }
         location = @PREFIX_NO_SLASH@ { return 302 @PREFIX@; }
@@ -129,8 +130,26 @@ http {
             '@GATEWAY@':str(ports['gateway']),'@JAVA@':str(ports['java']),'@AI@':str(ports['ai'])}
     for key,value in values.items():source=source.replace(key,value)
     for name,host in hosts.items():source=source.replace('@'+name.upper()+'_HOST@','['+host+']' if ':' in host else host)
+    cinema=''
+    if os.getenv('CINEMA_ENABLED','false').lower() in ('1','true'):
+        cinema='''location ~ ^/cinema(?:/|$) {
+            proxy_pass http://[::1]:43648;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
+            proxy_read_timeout 120s;
+            proxy_buffering off;
+            client_max_body_size 1m;
+        }'''
+    source=source.replace('@CINEMA_LOCATION@',cinema)
     (ROOT/'runtime/nginx.conf').write_text(source,encoding='utf-8')
     print('Native runtime paths and gateway configuration prepared.')
+elif mode=='cinema-start':
+    if os.getenv('CINEMA_ENABLED','false').lower() in ('1','true'):
+        import subprocess
+        subprocess.run(['/bin/sh',str(ROOT.parent/'libretv/deploy/freebsd/service.sh'),'start'],check=True)
 elif mode=='java':
     binary=os.getenv('JAVA_BIN') or shutil.which('java21') or ('/usr/local/bin/java21' if Path('/usr/local/bin/java21').is_file() else shutil.which('java'))
     if not binary:raise SystemExit('Java 21 is required')
