@@ -14,10 +14,10 @@ index 5396501..2ade53d 100644
 +public/source.zip
 diff --git a/deploy/freebsd/README.md b/deploy/freebsd/README.md
 new file mode 100644
-index 0000000..05213f0
+index 0000000..496a96a
 --- /dev/null
 +++ b/deploy/freebsd/README.md
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,62 @@
 +# LibreTV 原版界面与 OpenList 接入（FreeBSD 原生）
 +
 +基于 LibreSpark/LibreTV 2.23.2，固定上游提交 `92461b5e458ba45233e1cba30b09ce0bbc0fa911`。继续遵守 AGPL-3.0-or-later；保留上游 LICENSE 与版权。部署时应在 `/cinema/source.zip` 提供本次构建的完整改造源码（不含 `.env`、凭据、依赖和构建缓存）；此地址供部署者及使用者获取源码。
@@ -78,6 +78,8 @@ index 0000000..05213f0
 +`/api/library` 要求与影院相同的密码会话，响应禁止公共缓存。服务端仅缓存轻量目录，60 秒有效，过期时可先返回最近 4 分钟内的旧目录并后台刷新；新识别条目因此通常在后续刷新中自动出现。浏览器每页只收 24 项，图片懒加载，目录请求不会触发视频下载、转码或识别。为防止小主机失控，单源最多 100 个 CMS 分页、同时 2 个请求、45 秒总超时；超过上限需缩小发布范围，不会悄悄截断结果。原始接口仍支持其他客户端独立使用。
 +
 +原版详情接口会复用已读取的目录详情，减少重复请求；播放地址仍由原版播放器解析，原网盘服务在播放时解析当前直链。
++
++网盘页的筛选与分页通过 Next 原生 History 接入更新 URL，只请求列表数据，不重复请求整个页面；连续修改条件以最新 URL 为准，浏览器前进后退仍可恢复条件。
 diff --git a/deploy/freebsd/service.sh b/deploy/freebsd/service.sh
 new file mode 100644
 index 0000000..ebc4e3d
@@ -462,13 +464,13 @@ index 55a5e66..baf9fc0 100644
                </MenuRow>
 diff --git a/src/components/library-wall.tsx b/src/components/library-wall.tsx
 new file mode 100644
-index 0000000..a6fd382
+index 0000000..313e196
 --- /dev/null
 +++ b/src/components/library-wall.tsx
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +'use client';
 +import { useEffect,useState } from 'react';
-+import { useRouter,useSearchParams } from 'next/navigation';
++import { useSearchParams } from 'next/navigation';
 +import { useQuery } from '@tanstack/react-query';
 +import { Header } from './header';
 +import { SiteFooter } from './site-footer';
@@ -479,15 +481,16 @@ index 0000000..a6fd382
 +import type { LibraryItem,LibraryPage } from '@/lib/library';
 +
 +export function LibraryWall() {
-+  const router=useRouter(),params=useSearchParams();
++  const params=useSearchParams();
 +  const {verified,checked,openLogin}=useAuth();
 +  const content=params.get('content')==='adult'?'adult':'general';
 +  const page=Math.max(1,Number(params.get('page'))||1),q=params.get('s')||'',category=params.get('category')||'',year=params.get('year')||'',sort=params.get('sort')||'newest';
 +  const [input,setInput]=useState(q),[detail,setDetail]=useState<LibraryItem|null>(null);
 +  useEffect(()=>setInput(q),[q]);
-+  const update=(changes:Record<string,string>)=>{const next=new URLSearchParams(params.toString());
++  const update=(changes:Record<string,string>)=>{const next=new URLSearchParams(window.location.search);
 +    for(const [k,v]of Object.entries(changes)){if(v)next.set(k,v);else next.delete(k)}
-+    router.push('/library?'+next.toString(),{scroll:true})};
++    window.history.pushState(null,'',appPath('/library')+'?'+next.toString());
++    window.scrollTo({top:0,behavior:'auto'})};
 +  const library=useQuery({queryKey:['own-library',content,page,q,category,year,sort],enabled:verified,staleTime:60000,retry:1,
 +    queryFn:({signal})=>api.library(new URLSearchParams({content,page:String(page),q,category,year,sort}),signal) as Promise<LibraryPage>});
 +  const data=library.data;
