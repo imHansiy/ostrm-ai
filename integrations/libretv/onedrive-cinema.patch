@@ -82,17 +82,20 @@ index 0000000..496a96a
 +网盘页的筛选与分页通过 Next 原生 History 接入更新 URL，只请求列表数据，不重复请求整个页面；连续修改条件以最新 URL 为准，浏览器前进后退仍可恢复条件。
 diff --git a/deploy/freebsd/service.sh b/deploy/freebsd/service.sh
 new file mode 100644
-index 0000000..c3abefd
+index 0000000..31b1a75
 --- /dev/null
 +++ b/deploy/freebsd/service.sh
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,45 @@
 +#!/bin/sh
 +set -eu
 +PATH="/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin${PATH:+:$PATH}"
 +export PATH
-+ROOT=$(CDPATH= cd -P "$(dirname "$0")/../.." && pwd)
++case "$0" in
++    /*/deploy/freebsd/service.sh) ROOT=${0%/deploy/freebsd/service.sh}; cd -P "$ROOT"; ROOT=$PWD ;;
++    *) ROOT=$(CDPATH= cd -P "$(dirname "$0")/../.." && pwd) ;;
++esac
 +RUN="$ROOT/runtime"
-+mkdir -p "$RUN"
++[ -d "$RUN" ] || mkdir -p "$RUN"
 +cd "$ROOT"
 +alive() { /usr/bin/pgrep -L -F "$RUN/supervisor.pid" >/dev/null 2>&1; }
 +case "${1:-status}" in
