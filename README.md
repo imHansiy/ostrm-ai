@@ -45,7 +45,7 @@
 
 FreeBSD / Serv00 无 Docker 环境见 [原生安装、同域名路由与旧插件迁移](docs/FREEBSD_NATIVE.md)。完整 Java + Nuxt + Python 应用可以放在现有 OpenList 同域名的 `/ostrm/`，旧 `/media/` 订阅链接可保持不变。
 
-需要网页影院时，可选用[独立 LibreTV 网盘海报墙集成](integrations/libretv/README.md)，直接接入本项目的成人/非成人 CMS 源。影院作为独立进程运行，AI 服务继续专注识别与媒体资料。
+需要网页影院时，可选用[原版 LibreTV 接入](integrations/libretv/README.md)，直接接入本项目的成人/非成人 CMS 源。影院作为独立进程运行，AI 服务继续专注识别与媒体资料。
 
 适合 Linux NAS/VPS，安装 Docker Engine 与 Compose 插件即可。先有一个能够正常访问视频的 OpenList。
 
