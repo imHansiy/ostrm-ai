@@ -67,6 +67,28 @@ python -m aitags.migrate_tidb --source /原数据目录/aitags.sqlite3
 
 ## 排错
 
+### 历史失败的分批恢复
+
+修复网盘连接、允许的媒体主机和资源配置后，可在 AI 服务的工作目录执行以下命令。原生安装先激活 Python 环境；Docker 使用 `docker compose -f compose.ai.yml exec ai python -m aitags.recovery ...`。
+
+```sh
+python -m aitags.recovery start --batch-size 20 --directory-batch-size 3 --rounds 2 --interval 30
+python -m aitags.recovery status
+python -m aitags.recovery pause
+python -m aitags.recovery resume
+python -m aitags.recovery stop
+```
+
+某个挂载的下载网络或授权尚未恢复时，可在创建计划时加 `--exclude-root /网盘/暂不可用的挂载`（可重复传入）。该范围的视频和目录只延后，不删除失败记录，也不会改变 OpenList 挂载配置；恢复摘要显示延后数量。修复外部条件后，停止已结束/旧计划并重新创建不带该排除项的计划即可重试。
+
+恢复计划保存在现有 AI 数据库中，重启后继续，只有单个后台 Worker 投放批次。每批最多重新入队 20 个已有失败视频和 3 个失败目录；本批与目录中新发现的任务处理完后再投放下一批。目录保留原分页游标；正常增量扫描继续跳过未变化的成功视频。旧任务失败、但视频已在后续识别成功的情况，也不会重复入队。暂停或取消的扫描不会被恢复计划擅自重新开启。
+
+默认最多两轮，第二轮至少间隔五分钟，已确定为损坏、已删除、认证/下载权限或大小预算不足的文件不在第二轮反复尝试。`pause`/`stop` 停止投放后续批次，已入队任务可在原任务管理中暂停/取消。`/ai/api/overview` 的 `recovery` 返回恢复摘要，完整 ID 游标不会混入模型设置。任务历史记录读取、整片压缩和调用模型的阶段，便于区分慢任务与空队列。
+
+背景 OpenList 读请求使用 `OPENLIST_SCAN_TIMEOUT`（默认 60 秒），临时错误最多追加两次重试；四秒目录可用性探测不会被延长。模型仅对明确的 408/429/5xx 临时拒绝做有限重试，不自动重复认证错误、HTTP 409 或结果不明的超时请求。媒体下载错误保留源站 HTTP 状态、预算或网络原因，不再一律报 FFmpeg 解码失败。
+
+白名单必须按实际可信存储配置，例如百度 `*.baidupcs.com`、PikPak `*.mypikpak.net`；不要使用任意主机 `*`。每次重定向仍检查白名单和公网地址。百度媒体请求使用其驱动要求的 `User-Agent: pan.baidu.com`。文件真的损坏、删除、网盘授权过期或服务商无法访问时，恢复计划保留失败原因，不会伪造成功。
+
 | 现象 | 检查 |
 |---|---|
 | AI 中心 503 | 两个服务的 AI_BRIDGE_KEY 一致；AI_SERVICE_URL 从 Java 可达 |

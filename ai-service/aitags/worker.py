@@ -46,6 +46,8 @@ class Worker:
         self.concurrency = 0
         self.concurrency_checked = float('-inf')
         self.on_result = None
+        from .recovery import Recovery
+        self.recovery = Recovery(db)
 
     def start(self):
         self.process_lock=WorkerLock(self.db.path+'.worker.lock')
@@ -155,7 +157,7 @@ class Worker:
             if self.excluded(row['path'], settings):
                 self.db.execute("UPDATE directories SET state='done' WHERE id=?", (row['id'],))
                 return True
-            data = self.ol.listing(row['path'], self.ol.admin_token(), row['page'], settings['page_size'])
+            data = self.ol.listing(row['path'], self.ol.admin_token(), row['page'], settings['page_size'],timeout=config.OPENLIST_SCAN_TIMEOUT)
             objects = data.get('content') or []
             for obj in objects:
                 run = self.db.one('SELECT state FROM runs WHERE id=?', (row['run_id'],))
@@ -188,7 +190,8 @@ class Worker:
 
     def finish_runs(self):
         self.db.execute("""UPDATE runs SET state=CASE WHEN error!='' OR EXISTS(
-          SELECT 1 FROM tasks WHERE run_id=runs.id AND state='failed') THEN 'failed' ELSE 'done' END
+          SELECT 1 FROM tasks WHERE run_id=runs.id AND state='failed') OR EXISTS(
+          SELECT 1 FROM directories WHERE run_id=runs.id AND state='failed') THEN 'failed' ELSE 'done' END
           WHERE state='running' AND NOT EXISTS(SELECT 1 FROM directories WHERE run_id=runs.id AND state IN ('queued','running'))
           AND NOT EXISTS(SELECT 1 FROM tasks WHERE run_id=runs.id AND state IN ('queued','running'))""")
 
@@ -197,6 +200,7 @@ class Worker:
             busy=False
             try:
                 s = self.db.settings()
+                self.recovery.tick()
                 interval = s['interval_minutes'] * 60
                 last = self.db.one("SELECT value FROM settings WHERE `key`='last_schedule'")
                 if interval and time.time() - (float(json.loads(last['value'])) if last else 0) >= interval:
@@ -216,6 +220,10 @@ class Worker:
             if not row:
                 return False
             task = dict(row)
+            current = c.execute('SELECT status,fingerprint FROM videos WHERE path=?',(task['path'],)).fetchone()
+            if current and current['status']=='done' and current['fingerprint']==task['fingerprint']:
+                c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
+                return True
             c.execute("UPDATE tasks SET state='running',attempts=attempts+1 WHERE id=?",(task['id'],))
             c.execute("UPDATE videos SET status='running',error='' WHERE path=?",(task['path'],))
         next_cancel_check = 0
@@ -234,7 +242,8 @@ class Worker:
                 run_cancelled = not run or run['state'] == 'cancelled'
             return run_cancelled
         try:
-            obj = self.ol.get(task['path'],self.ol.admin_token())
+            self.db.event(task['path'],'processing','正在读取视频信息')
+            obj = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
             if fingerprint(obj) != task['fingerprint']:
                 raise RuntimeError('视频已变化，请重新扫描后识别')
             settings = self.db.settings()
@@ -257,6 +266,7 @@ class Worker:
                     except OSError:
                         self.db.event(task['path'],'warning','补充画面缓存未能保存，本次继续识别')
                 if sample is None:
+                    self.db.event(task['path'],'processing','正在压缩完整视频与提取证据')
                     sample = compress_video(obj['raw_url'],self.ol.url,settings,cancelled,
                                             subtitles=bool(task['use_subtitles']))
                     try:
@@ -271,9 +281,10 @@ class Worker:
                 save_subtitles(task['path'],task['fingerprint'],sample['subtitles'])
             if cancelled():
                 raise RuntimeError('任务已取消')
+            self.db.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
             result = infer(sample,settings)
             # Re-read identity after inference so changed files cannot inherit stale results.
-            latest = self.ol.get(task['path'],self.ol.admin_token())
+            latest = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
             if fingerprint(latest) != task['fingerprint']:
                 raise RuntimeError('识别期间视频发生变化，请重新扫描')
             with self.db.connect() as c:
@@ -343,7 +354,7 @@ class Worker:
             elif action == 'retry' and run['state'] in ('done','failed'):
                 c.execute("UPDATE runs SET state='running',error='' WHERE id=?",(rid,))
                 c.execute("UPDATE directories SET state='queued' WHERE run_id=? AND state='failed'",(rid,))
-                c.execute("UPDATE tasks SET state='queued',error='' WHERE run_id=? AND state='failed' AND path NOT IN (SELECT path FROM tasks WHERE state IN ('running','queued'))",(rid,))
+                c.execute("UPDATE tasks SET state='queued',error='' WHERE run_id=? AND state='failed' AND path NOT IN (SELECT path FROM tasks WHERE state IN ('running','queued')) AND path NOT IN (SELECT path FROM videos WHERE status='done')",(rid,))
                 c.execute("UPDATE videos SET status='pending',error='' WHERE path IN (SELECT path FROM tasks WHERE run_id=? AND state='queued')",(rid,))
             else:
                 raise HTTPException(409,'当前状态不支持此操作')

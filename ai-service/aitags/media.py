@@ -25,6 +25,15 @@ class MediaError(RuntimeError):
 FORMATS='mov,matroska,webm,avi,mpegts,flv,mpegvideo,asf'
 
 
+def media_headers(url):
+    host = (urlsplit(url).hostname or '').lower()
+    headers = {'Accept-Encoding': 'identity'}
+    # Required by the official Baidu driver for large-file downloads.
+    if host == 'baidupcs.com' or host.endswith('.baidupcs.com'):
+        headers['User-Agent'] = 'pan.baidu.com'
+    return headers
+
+
 def approve_url(url, openlist_url):
     p = urlsplit(url)
     host = (p.hostname or '').lower()
@@ -46,6 +55,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
     nonce = '/' + uuid.uuid4().hex
     remaining = [budget]
     used = [0]
+    failures = []
     lock = threading.Lock()
     deadline = time.monotonic() + timeout
     client = httpx.Client(timeout=15, follow_redirects=False)
@@ -68,12 +78,12 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
             try:
                 if time.monotonic() >= deadline or cancelled():
                     raise MediaError('媒体读取已停止')
-                headers = {'Accept-Encoding': 'identity'}
-                if self.headers.get('Range'):
-                    headers['Range'] = self.headers['Range']
                 current = url
                 for _ in range(6):
                     approve_url(current, openlist_url)
+                    headers = media_headers(current)
+                    if self.headers.get('Range'):
+                        headers['Range'] = self.headers['Range']
                     request = client.build_request('HEAD' if head else 'GET', current, headers=headers)
                     response = client.send(request, stream=True)
                     if response.status_code in (301,302,303,307,308):
@@ -83,7 +93,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
                         continue
                     break
                 if response is None or response.status_code not in (200,206):
-                    raise MediaError('媒体源无法读取')
+                    status = response.status_code if response is not None else 502
+                    raise MediaError(f'媒体源拒绝读取（HTTP {status}），请检查直链有效期和网盘下载权限')
                 self.send_response(response.status_code)
                 for key in ('Content-Length','Content-Range','Content-Type','Accept-Ranges'):
                     if key in response.headers:
@@ -94,11 +105,16 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
                     for chunk in response.iter_raw(chunk_size=32768):
                         with lock:
                             if len(chunk) > remaining[0] or time.monotonic() >= deadline or cancelled():
+                                failures.append('媒体读取超过单片流量预算或超时，已停止下载')
                                 break
                             remaining[0] -= len(chunk)
                             used[0] += len(chunk)
                         self.wfile.write(chunk)
-            except (httpx.HTTPError, OSError, MediaError):
+            except (httpx.HTTPError, OSError, MediaError) as error:
+                if isinstance(error, MediaError):
+                    failures.append(str(error))
+                elif isinstance(error, httpx.HTTPError):
+                    failures.append('媒体源连接或读取失败，请检查网盘/CDN 网络和限速')
                 self.close_connection = True
             finally:
                 if response:
@@ -110,7 +126,12 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f'http://127.0.0.1:{server.server_port}{nonce}', used
+        try:
+            yield f'http://127.0.0.1:{server.server_port}{nonce}', used
+        except MediaError:
+            if failures:
+                raise MediaError(failures[-1]) from None
+            raise
     finally:
         server.shutdown()
         server.server_close()
@@ -121,8 +142,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
 def run_process(args, timeout, cancelled=lambda: False):
     # Never log command lines: they may contain a short-lived gateway URL.
     import tempfile
-    with tempfile.TemporaryFile() as out:
-        proc = subprocess.Popen(args, stdout=out, stderr=subprocess.DEVNULL)
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as errors:
+        proc = subprocess.Popen(args, stdout=out, stderr=errors)
         deadline = time.monotonic() + timeout
         try:
             while proc.poll() is None:
@@ -130,6 +151,12 @@ def run_process(args, timeout, cancelled=lambda: False):
                     raise MediaError('媒体解码超时或任务取消')
                 time.sleep(.1)
             if proc.returncode:
+                errors.seek(0)
+                detail = errors.read(8192).decode(errors='replace').lower()
+                if 'no space left' in detail or 'disk quota exceeded' in detail:
+                    raise MediaError('视频压缩临时磁盘空间或账号配额不足')
+                if any(word in detail for word in ('moov atom not found','invalid data found','error reading header')):
+                    raise MediaError('视频容器损坏、不完整或文件内容不是有效视频')
                 raise MediaError('FFmpeg 无法解码；检查格式、Range 支持、流量上限和媒体域名白名单')
             out.seek(0)
             return out.read(1024 * 1024)

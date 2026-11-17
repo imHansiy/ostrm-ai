@@ -88,7 +88,8 @@ class Database:
             return c.execute(sql, args).lastrowid
 
     def settings(self):
-        return {**DEFAULTS, **{r['key']: json.loads(r['value']) for r in self.all('SELECT * FROM settings')}}
+        # Recovery cursors are durable internal state, not per-video model settings.
+        return {**DEFAULTS, **{r['key']: json.loads(r['value']) for r in self.all("SELECT * FROM settings WHERE `key`!='failure_recovery'")}}
 
     def save_settings(self, values):
         with self.connect() as c:

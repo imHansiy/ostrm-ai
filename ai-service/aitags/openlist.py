@@ -36,17 +36,34 @@ class OpenList:
         self.login_time = 0
 
     def call(self, method, route, token='', body=None, timeout=None):
-        try:
-            options={'timeout':timeout} if timeout is not None else {}
-            r = self.client.request(method, self.url + '/api/' + route, headers={'Authorization': token}, json=body,**options)
-            r.raise_for_status()
-            d = r.json()
-            if d.get('code') != 200:
+        # Retry reads only. Interactive four-second catalog probes keep their deadline.
+        retries = 2 if route in ('fs/get','fs/list','me') and (timeout is None or timeout > 5) else 0
+        for attempt in range(retries + 1):
+            try:
+                options={'timeout':timeout} if timeout is not None else {}
+                r = self.client.request(method, self.url + '/api/' + route, headers={'Authorization': token}, json=body,**options)
+                r.raise_for_status()
+                d = r.json()
+                if d.get('code') == 200:
+                    return d.get('data')
                 code = d.get('code', 502)
-                raise HTTPException(code if code in (400,401,403,404) else 502, 'OpenList 拒绝访问或请求失败')
-            return d.get('data')
-        except (httpx.HTTPError, ValueError):
-            raise HTTPException(502, '无法连接 OpenList') from None
+                reason = str(d.get('message','')).lower()
+                if any(word in reason for word in ('object not found','file not found','no such file','文件不存在')):
+                    raise HTTPException(404, 'OpenList 文件不存在或已移动')
+                if code in (400,401,403,404):
+                    raise HTTPException(code, f'OpenList 请求被拒绝（HTTP {code}），请检查路径权限或挂载凭据')
+                if attempt == retries:
+                    raise HTTPException(502, 'OpenList 上游请求失败，请检查挂载状态或稍后重试')
+            except httpx.HTTPStatusError as error:
+                code = error.response.status_code
+                if code in (400,401,403,404):
+                    raise HTTPException(code, f'OpenList 请求被拒绝（HTTP {code}），请检查路径权限或挂载凭据') from None
+                if attempt == retries:
+                    raise HTTPException(502, f'OpenList 上游 HTTP {code}，请稍后重试') from None
+            except (httpx.HTTPError, ValueError):
+                if attempt == retries:
+                    raise HTTPException(502, '无法连接 OpenList，连接或读取超时') from None
+            time.sleep(min(2, .5 * 2**attempt))
 
     def admin_token(self):
         with self.lock:

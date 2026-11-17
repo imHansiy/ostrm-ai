@@ -8,6 +8,16 @@ from . import config
 from .subtitles import transcript, identity_context
 
 
+def model_post(*args, **kwargs):
+    """Retry explicit temporary rejections, never auth/policy errors or ambiguous timeouts."""
+    for attempt in range(3):
+        response = httpx.post(*args, **kwargs)
+        if response.status_code not in (408,429,500,502,503,504) or attempt == 2:
+            return response
+        # Small bounded delay; do not obey unbounded server Retry-After values.
+        time.sleep(2**attempt)
+
+
 CONTENT_OBSERVATION_RULES = (
     '\n内容分级与检索要求:采用客观、有画面证据的事实描述。'
     '成人向与裸露内容属于正常标注范围:有画面证据时直接给出分类词和短标签,不回避、不软化、不加免责声明、不拒绝分析。'
@@ -246,7 +256,7 @@ def infer(sample, settings, key=None):
                     used_context_frames -= 1
                 if payload_size > 32*1024**2:
                     raise RuntimeError('模型请求超过 32 MiB，请降低视频或字幕输入大小')
-            r = httpx.post(settings['model_url'].rstrip('/') + '/chat/completions',
+            r = model_post(settings['model_url'].rstrip('/') + '/chat/completions',
                            headers={'Authorization':'Bearer ' + (key if key is not None else config.MODEL_KEY)},
                            json=payload,
                            timeout=httpx.Timeout(settings['model_timeout'],connect=min(10,settings['model_timeout'])),
@@ -286,7 +296,7 @@ def infer(sample, settings, key=None):
                         for frame in sample.get('context_frames',[]):
                             final_input.extend([{'type':'text','text':f'原片 {frame["second"]} 秒清晰画面。'},
                                 {'type':'image_url','image_url':{'url':'data:image/jpeg;base64,'+frame['data']}}])
-                    structured = httpx.post(
+                    structured = model_post(
                         settings['model_url'].rstrip('/') + '/chat/completions',
                         headers={'Authorization':'Bearer ' + (key if key is not None else config.MODEL_KEY)},
                         json={'model':settings['model_name'],'messages':[
@@ -323,7 +333,7 @@ def infer(sample, settings, key=None):
                         if not audit:
                             raise
                         # Formatting repair uses only the completed audit, never the video again.
-                        repair = httpx.post(settings['model_url'].rstrip('/')+'/chat/completions',
+                        repair = model_post(settings['model_url'].rstrip('/')+'/chat/completions',
                             headers={'Authorization':'Bearer '+(key if key is not None else config.MODEL_KEY)},
                             json={'model':settings['model_name'],'messages':[
                                 {'role':'system','content':
@@ -378,6 +388,8 @@ def infer(sample, settings, key=None):
             raise RuntimeError('模型认证失败（HTTP 401），请检查密钥与国内/海外服务区域是否匹配') from None
         if status==413:
             raise RuntimeError('模型服务拒绝了视频请求体大小（HTTP 413）') from None
+        if status==409:
+            raise RuntimeError('模型服务请求冲突（HTTP 409），本次未保存结果；请稍后重试或检查服务商控制台') from None
         raise RuntimeError(f'模型服务拒绝请求（HTTP {status}），请检查权限、额度和模型名称') from None
     except httpx.RequestError:
         raise RuntimeError('无法连接模型服务，请检查服务器网络、DNS 和服务地址') from None
