@@ -12,8 +12,10 @@
 
     <section v-if="tab === 'overview'" class="space-y-6">
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div v-for="stat in stats" :key="stat.label" class="stat-card"><p class="text-sm text-white/50">{{ stat.label }}</p><strong class="block text-3xl text-white mt-3">{{ stat.value }}</strong></div>
+        <div v-for="stat in stats" :key="stat.label" class="stat-card"><p class="text-sm text-white/50">{{ stat.label }}</p><strong class="block text-3xl text-white mt-3">{{ stat.value.toLocaleString() }}</strong><p class="text-xs text-white/40 mt-3 leading-5">{{ stat.hint }}</p></div>
       </div>
+      <AiRecoveryProgress v-if="overview.recovery && overview.recovery.state !== 'disabled'" :plan="overview.recovery" />
+      <p class="text-xs text-white/40" aria-live="polite">{{ progressError || (progressUpdated ? '进度每 5 秒自动刷新 · 最近更新 '+progressUpdated : '正在读取进度…') }}</p>
       <div class="card p-6"><h2 class="text-xl text-white font-semibold">从识别到入库</h2><div class="grid sm:grid-cols-3 gap-6 mt-6 text-sm"><div><b class="text-blue-300">01 配置与扫描</b><p class="text-white/50 mt-2 leading-7">连接在线 MiniCPM-V，设置目录、资源上限和定时扫描。</p></div><div><b class="text-blue-300">02 校对资料</b><p class="text-white/50 mt-2 leading-7">查看真实画面生成的简介与标签；人工标签在重新识别后保留。</p></div><div><b class="text-blue-300">03 导出与订阅</b><p class="text-white/50 mt-2 leading-7">生成 STRM/NFO、M3U、RSS、TVBox 或 Jellyfin 接入信息。</p></div></div></div>
       <div class="card p-6 text-sm text-white/60"><p>媒体输出目录：<code>{{ exportDirectory || '读取中…' }}</code></p><p class="mt-3">OpenList：{{ openlistUrl || '请先配置 AI 服务的 OpenList 连接' }}</p><p class="mt-3">原有 OStrm 任务可继续生成 STRM。启用自动 AI 入队后，新视频将进入持久化识别队列。</p></div>
     </section>
@@ -37,8 +39,9 @@
     </section>
 
     <section v-if="tab === 'queue'" class="space-y-6">
+      <AiRecoveryProgress v-if="overview.recovery && overview.recovery.state !== 'disabled'" :plan="overview.recovery" />
       <form class="card p-6" @submit.prevent="scan"><h2 class="text-xl font-semibold text-white mb-4">目录识别任务</h2><label class="field">本次扫描目录，每行一个<textarea v-model="scanText" rows="3" class="input" required></textarea></label><div class="flex flex-wrap gap-4 mt-4 items-center"><label class="text-sm text-white/60"><input v-model="useSubtitles" type="checkbox"> 结合字幕识别</label><button class="btn-primary" :disabled="busy">开始扫描</button></div></form>
-      <div class="card overflow-x-auto"><table class="w-full text-sm text-left"><thead class="text-white/40"><tr><th class="p-4">任务</th><th class="p-4">目录</th><th class="p-4">状态与进度</th><th class="p-4">操作</th></tr></thead><tbody class="text-white/75"><tr v-for="job in jobs" :key="job.id" class="border-t border-white/5"><td class="p-4">#{{ job.id }}</td><td class="p-4 break-all max-w-sm">{{ job.root }}</td><td class="p-4">{{ job.state }}<pre class="text-xs mt-1 text-white/40">{{ job.counts ? JSON.stringify(job.counts) : '' }}</pre></td><td class="p-4"><div class="flex gap-2"><button v-for="action in actions(job.state)" :key="action.id" class="text-blue-300 text-xs" @click="jobAction(job.id, action.id)">{{ action.label }}</button></div></td></tr></tbody></table><p v-if="!jobs.length" class="p-6 text-white/40">暂无任务。</p></div>
+      <div class="card overflow-x-auto"><table class="w-full text-sm text-left"><thead class="text-white/40"><tr><th class="p-4">任务</th><th class="p-4">目录</th><th class="p-4">状态与进度</th><th class="p-4">操作</th></tr></thead><tbody class="text-white/75"><tr v-for="job in jobs" :key="job.id" class="border-t border-white/5"><td class="p-4">#{{ job.id }}</td><td class="p-4 break-all max-w-sm">{{ job.root }}</td><td class="p-4"><span>{{ jobStateLabels[job.state] || job.state }}</span><p v-if="job.tasks" class="text-xs leading-6 mt-2 text-white/50">视频：完成 {{ job.tasks.done || 0 }} · 排队 {{ job.tasks.queued || 0 }} · 处理中 {{ job.tasks.running || 0 }} · 失败 {{ job.tasks.failed || 0 }}</p><p v-if="job.directories" class="text-xs leading-6 text-white/40">目录：完成 {{ job.directories.done || 0 }} · 待检查 {{ job.directories.queued || 0 }} · 检查中 {{ job.directories.running || 0 }} · 失败 {{ job.directories.failed || 0 }}</p></td><td class="p-4"><div class="flex gap-2"><button v-for="action in actions(job.state)" :key="action.id" class="text-blue-300 text-xs" @click="jobAction(job.id, action.id)">{{ action.label }}</button></div></td></tr></tbody></table><p v-if="!jobs.length" class="p-6 text-white/40">暂无任务。</p></div>
     </section>
 
     <section v-if="tab === 'library'" class="space-y-5">
@@ -74,6 +77,8 @@ type Row = Record<string, any>
 const route=useRoute()
 const tabs=[{id:'overview',label:'总览'},{id:'settings',label:'模型与扫描'},{id:'queue',label:'识别任务'},{id:'library',label:'识别资料'},{id:'publications',label:'外部协议与导出'},{id:'tags',label:'标签规则'},{id:'history',label:'历史与错误日志'}]
 const tab=ref('overview'),busy=ref(false),message=ref(''),error=ref(''),overview=ref<Row>({}),settings=reactive<Row>({}),jobs=ref<Row[]>([])
+const jobStateLabels:Record<string,string>={running:'进行中',paused:'已暂停',done:'已结束',failed:'有失败项',cancelled:'已取消'}
+const progressUpdated=ref(''),progressError=ref('')
 const keyConfigured=ref(false),modelKey=ref(''),rootText=ref(''),excludeText=ref(''),extensionText=ref(''),scanText=ref(''),useSubtitles=ref(true)
 const coverBackfill=ref(false)
 const aliasText=ref(''),favoriteText=ref(''),historyRecords=ref<Row[]>([]),onlyErrors=ref(false)
@@ -85,15 +90,24 @@ const library=ref<Row[]>([]),libraryTotal=ref(0),libraryPage=ref(1),libraryPages
 const detailDialog=ref<HTMLDialogElement|null>(null),tagDialog=ref<HTMLDialogElement|null>(null),detail=ref(''),editingPath=ref(''),manualTags=ref(''),removedTags=ref('')
 const numericFields=[{key:'interval_minutes',label:'自动扫描间隔（分钟，0 关闭）',min:0,max:10080},{key:'concurrency',label:'识别并发',min:1,max:4},{key:'video_num_frames',label:'模型视频帧数',min:0,max:128},{key:'context_frames',label:'补充证据帧数',min:0,max:8},{key:'max_video_bytes',label:'视频大小上限（字节）',min:1048576,max:1099511627776},{key:'max_network_bytes',label:'单视频读取流量上限（字节）',min:1048576,max:17179869184},{key:'media_timeout',label:'压缩与取字幕超时（秒）',min:10,max:7200},{key:'model_timeout',label:'推理超时（秒）',min:10,max:1800}]
 const linkLabels:Record<string,string>={strm_nfo_zip:'STRM＋NFO＋封面下载包',m3u:'扩展 M3U',rss:'RSS 2.0＋Media RSS',podcast:'视频播客 RSS',maccms:'苹果 CMS v10 JSON',tvbox:'TVBox 配置',tvbox_split:'TVBox 配置（成人 / 非成人分源）',libretv:'LibreTV 订阅',jellyfin_server:'Jellyfin 服务器地址',jellyfin_username:'Jellyfin 用户名',jellyfin_password:'Jellyfin 密码',webdav_server:'原 OpenList WebDAV 地址（使用原账户）',webdav_ai_server:'带 AI 资料的只读 WebDAV 地址',webdav_username:'只读 WebDAV 用户名',webdav_password:'只读 WebDAV 密码'}
-const stats=computed(()=>[{label:'已识别',value:overview.value.videos?.done||0},{label:'等待识别',value:overview.value.tasks?.queued||0},{label:'正在识别',value:overview.value.tasks?.running||0},{label:'有效订阅',value:publications.value.filter(row=>!row.revoked).length}])
+const stats=computed(()=>{
+  const videos=overview.value.videos,tasks=overview.value.tasks
+  return [{label:'已识别',value:videos ? videos.done||0 : '—',hint:'全库已完成识别的视频'},
+    {label:'尚未成功（全库）',value:videos ? Object.entries(videos).reduce((sum,[state,count])=>sum+(state==='done'?0:Number(count)),0) : '—',hint:'含失败、排队、处理中及已取消'},
+    {label:'已入队待识别',value:tasks ? tasks.queued||0 : '—',hint:'仅当前队列，不含后续恢复批次'},
+    {label:'正在识别',value:tasks ? tasks.running||0 : '—',hint:'当前正在处理的视频'}]
+})
+function setProgress(value:Row){overview.value=value;progressUpdated.value=new Date().toLocaleTimeString();progressError.value=''}
+let progressRefreshing=false,queuesRefreshing=false
+async function refreshOverview(){if(progressRefreshing)return;progressRefreshing=true;try{setProgress(await api('/overview'))}catch{progressError.value='进度暂时无法刷新，当前显示上次数据'}finally{progressRefreshing=false}}
 const lines=(value:string)=>value.split(/\r?\n/).map(row=>row.trim()).filter(Boolean)
 const tags=(value:string)=>value.split(/[,，]/).map(row=>row.trim()).filter(Boolean)
 const api=<T=any>(path:string,method='GET',body?:unknown)=>authenticatedApiCall<T>('/ai'+path,{method,body})
 async function operation(action:()=>Promise<void>){busy.value=true;error.value='';message.value='';try{await action()}catch(cause:any){const value=cause?.data?.detail;error.value=Array.isArray(value)?value.map((entry:any)=>entry.msg).join('；'):typeof value==='string'?value:(cause.message||'操作失败，请重试')}finally{busy.value=false}}
-async function reload(){await operation(async()=>{const [stats,data,records,profiles,outputs]=await Promise.all([api('/overview'),api('/settings'),api('/jobs'),api('/exports/publications'),api('/exports/jobs')]);overview.value=stats;coverBackfill.value=Boolean(data.cover_backfill);Object.assign(settings,data.settings);keyConfigured.value=data.model_key_configured;rootText.value=(settings.roots||[]).join('\n');excludeText.value=(settings.exclude||[]).join('\n');extensionText.value=(settings.extensions||[]).join(',');if(!scanText.value)scanText.value=rootText.value;if(!publicationRoots.value)publicationRoots.value=rootText.value;publications.value=profiles.items;exportDirectory.value=profiles.export_directory;openlistUrl.value=profiles.openlist_url;exportJobs.value=outputs;jobs.value=records})}
+async function reload(){await operation(async()=>{const [stats,data,records,profiles,outputs]=await Promise.all([api('/overview'),api('/settings'),api('/jobs'),api('/exports/publications'),api('/exports/jobs')]);setProgress(stats);coverBackfill.value=Boolean(data.cover_backfill);Object.assign(settings,data.settings);keyConfigured.value=data.model_key_configured;rootText.value=(settings.roots||[]).join('\n');excludeText.value=(settings.exclude||[]).join('\n');extensionText.value=(settings.extensions||[]).join(',');if(!scanText.value)scanText.value=rootText.value;if(!publicationRoots.value)publicationRoots.value=rootText.value;publications.value=profiles.items;exportDirectory.value=profiles.export_directory;openlistUrl.value=profiles.openlist_url;exportJobs.value=outputs;jobs.value=records})}
 async function changeTab(value:string){tab.value=value;error.value='';message.value='';if(value==='library')await loadLibrary(1);else if(value==='queue'||value==='publications')await refreshQueues();else if(value==='tags')await operation(async()=>{const data=await api('/tags');aliasText.value=data.aliases.map((row:Row)=>row.alias+'='+row.canonical).join('\n');favoriteText.value=data.favorites.join(',')});else if(value==='history')await operation(async()=>{historyRecords.value=await api('/history')})}
 async function saveTagRules(){await operation(async()=>{const aliases=lines(aliasText.value).map(value=>{const index=value.indexOf('=');if(index<1||index===value.length-1)throw Error('每行需要填写「别名=规范标签」');return {alias:value.slice(0,index).trim(),canonical:value.slice(index+1).trim()}});await api('/tags','PUT',{aliases,favorites:tags(favoriteText.value)});message.value='标签规则已保存'})}
-async function refreshQueues(){try{const [tasks,profiles,outputs]=await Promise.all([api('/jobs'),api('/exports/publications'),api('/exports/jobs')]);jobs.value=tasks;publications.value=profiles.items;exportJobs.value=outputs}catch(cause:any){error.value=cause?.data?.detail||'数据暂时无法刷新'}}
+async function refreshQueues(){if(queuesRefreshing)return;queuesRefreshing=true;try{const [tasks,profiles,outputs,stats]=await Promise.all([api('/jobs'),api('/exports/publications'),api('/exports/jobs'),api('/overview')]);jobs.value=tasks;publications.value=profiles.items;exportJobs.value=outputs;setProgress(stats)}catch(cause:any){error.value=cause?.data?.detail||'数据暂时无法刷新'}finally{queuesRefreshing=false}}
 async function saveSettings(){await operation(async()=>{await api('/settings','PUT',{...settings,roots:lines(rootText.value),exclude:lines(excludeText.value),extensions:tags(extensionText.value)});await api('/library/covers','PUT',{enabled:coverBackfill.value});message.value='设置已保存'})}
 async function saveKey(){await operation(async()=>{await api('/model/key','PUT',{key:modelKey.value});modelKey.value='';keyConfigured.value=true;message.value='模型密钥已更新'})}
 async function testModel(){await operation(async()=>{const result=await api('/model/test','POST',{});message.value='模型测试完成：'+JSON.stringify(result)})}
@@ -114,7 +128,7 @@ async function saveTags(){await operation(async()=>{await api('/videos/edit','PO
 async function copy(value:string){try{await navigator.clipboard.writeText(value);message.value='已复制'}catch{message.value='请选中字段内容后复制'}}
 function selectText(event:FocusEvent){(event.target as HTMLInputElement)?.select()}
 let timer:ReturnType<typeof setInterval>|undefined
-onMounted(async()=>{publicationForm.public_base_url=window.location.origin;await reload();const requested=String(route.query.tab||'');if(tabs.some(entry=>entry.id===requested))await changeTab(requested);timer=setInterval(()=>{if(!document.hidden&&!busy.value&&(tab.value==='queue'||tab.value==='publications'))refreshQueues()},5000)})
+onMounted(async()=>{publicationForm.public_base_url=window.location.origin;await reload();const requested=String(route.query.tab||'');if(requested!=='overview'&&tabs.some(entry=>entry.id===requested))await changeTab(requested);timer=setInterval(()=>{if(document.hidden||busy.value)return;if(tab.value==='overview')refreshOverview();else if(tab.value==='queue'||tab.value==='publications')refreshQueues()},5000)})
 onBeforeUnmount(()=>{if(timer)clearInterval(timer)})
 </script>
 
