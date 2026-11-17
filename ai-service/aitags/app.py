@@ -407,7 +407,9 @@ def create_app(db=None, ol=None, background=True):
             scans={row['state']:row['n'] for row in connection.execute(
                 "SELECT state, COUNT(*) AS n FROM runs WHERE state IN ('running','paused') GROUP BY state")}
         return {'videos':videos,'tasks':tasks,'scans':scans,
-                'recovery':worker.recovery.summary(worker.recovery.status())}
+                'recovery':worker.recovery.summary(worker.recovery.status()),
+                'activity':worker.activity.snapshot(),
+                'last_success':db.one("SELECT path,created FROM history WHERE state='done' ORDER BY id DESC LIMIT 1")}
 
     @app.post('/ai/api/library')
     def library(body:LibraryQuery,request:Request):

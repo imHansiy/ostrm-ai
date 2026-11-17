@@ -13,6 +13,7 @@ from .subtitles import save_subtitles
 from .evidence_cache import EvidenceCache
 from .lock import WorkerLock
 from .covers import extract_cover, save_cover, store_sidecar
+from .activity import Activity, report
 
 
 def fingerprint(obj):
@@ -46,6 +47,7 @@ class Worker:
         self.concurrency = 0
         self.concurrency_checked = float('-inf')
         self.on_result = None
+        self.activity = Activity()
         from .recovery import Recovery
         self.recovery = Recovery(db)
 
@@ -153,15 +155,21 @@ class Worker:
                 return False
             row = dict(row)
             c.execute("UPDATE directories SET state='running' WHERE id=?", (row['id'],))
+        activity_token = self.activity.begin({**row,'kind':'directory'})
+        outcome, activity_error = 'page_done', ''
         try:
+            report(stage='listing', deadline_at=time.time()+config.OPENLIST_SCAN_TIMEOUT)
             if self.excluded(row['path'], settings):
                 self.db.execute("UPDATE directories SET state='done' WHERE id=?", (row['id'],))
                 return True
             data = self.ol.listing(row['path'], self.ol.admin_token(), row['page'], settings['page_size'],timeout=config.OPENLIST_SCAN_TIMEOUT)
             objects = data.get('content') or []
-            for obj in objects:
+            report(stage='indexing', total_entries=len(objects))
+            for index,obj in enumerate(objects,1):
+                report(processed_entries=index)
                 run = self.db.one('SELECT state FROM runs WHERE id=?', (row['run_id'],))
                 if self.stop.is_set() or run['state'] == 'cancelled':
+                    outcome = 'queued' if self.stop.is_set() else 'cancelled'
                     return True
                 name = obj.get('name','')
                 if not name or '/' in name or '\\' in name or name in ('.','..'):
@@ -183,9 +191,12 @@ class Worker:
             self.db.execute('UPDATE directories SET state=?,page=page+? WHERE id=?', ('queued' if more else 'done',int(more),row['id']))
         except Exception as exc:
             message = safe_error(exc)
+            outcome, activity_error = 'failed', message
             self.db.execute("UPDATE directories SET state='failed' WHERE id=?",(row['id'],))
             self.db.execute('UPDATE runs SET error=? WHERE id=?',(message,row['run_id']))
             self.db.event(row['path'],'failed',message)
+        finally:
+            self.activity.finish(row['id'],outcome,activity_token,activity_error,kind='directory')
         return True
 
     def finish_runs(self):
@@ -220,7 +231,7 @@ class Worker:
             if not row:
                 return False
             task = dict(row)
-            current = c.execute('SELECT status,fingerprint FROM videos WHERE path=?',(task['path'],)).fetchone()
+            current = c.execute('SELECT status,fingerprint,size FROM videos WHERE path=?',(task['path'],)).fetchone()
             if current and current['status']=='done' and current['fingerprint']==task['fingerprint']:
                 c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
                 return True
@@ -228,6 +239,8 @@ class Worker:
             c.execute("UPDATE videos SET status='running',error='' WHERE path=?",(task['path'],))
         next_cancel_check = 0
         run_cancelled = False
+        activity_token = self.activity.begin({**task, 'size': current['size'] if current else 0})
+        outcome, activity_error = 'failed', ''
 
         def cancelled():
             nonlocal next_cancel_check, run_cancelled
@@ -244,6 +257,7 @@ class Worker:
         try:
             self.db.event(task['path'],'processing','正在读取视频信息')
             obj = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
+            report(size=obj.get('size',0))
             if fingerprint(obj) != task['fingerprint']:
                 raise RuntimeError('视频已变化，请重新扫描后识别')
             settings = self.db.settings()
@@ -258,14 +272,18 @@ class Worker:
             if config.MODEL_NATIVE_VIDEO:
                 cache_path = self.evidence_cache.path(task['path'],task['fingerprint'],task['use_subtitles'],settings)
                 sample = self.evidence_cache.load(cache_path)
+                if sample is not None:
+                    report(stage='cached', cache_hit=True)
                 if (sample is not None and sample.get('subtitles') and task['content_type']=='movie'
                         and sample.get('context_revision',0)<3 and settings.get('context_frames',5)>0):
+                    report(stage='context_frames')
                     sample = refresh_context_frames(sample,obj['raw_url'],self.ol.url,settings,cancelled)
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:
                         self.db.event(task['path'],'warning','补充画面缓存未能保存，本次继续识别')
                 if sample is None:
+                    report(stage='probe', deadline_at=time.time()+settings['media_timeout'])
                     self.db.event(task['path'],'processing','正在压缩完整视频与提取证据')
                     sample = compress_video(obj['raw_url'],self.ol.url,settings,cancelled,
                                             subtitles=bool(task['use_subtitles']))
@@ -274,7 +292,9 @@ class Worker:
                     except OSError:
                         self.db.event(task['path'],'warning','压缩证据缓存未能保存，本次继续识别')
             else:
+                report(stage='sampling', deadline_at=time.time()+settings['media_timeout'])
                 sample = sample_frames(obj['raw_url'],self.ol.url,settings,cancelled)
+            report(duration=sample.get('duration',0), compressed_bytes=sample.get('video_bytes',0))
             sample['content_type'] = task['content_type']
             if sample.get('subtitles'):
                 sample['source_name'] = obj.get('name','')[:500]
@@ -282,7 +302,9 @@ class Worker:
             if cancelled():
                 raise RuntimeError('任务已取消')
             self.db.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
+            report(stage='model_video', deadline_at=time.time()+settings['model_timeout'])
             result = infer(sample,settings)
+            report(stage='saving', deadline_at=time.time()+config.OPENLIST_SCAN_TIMEOUT)
             # Re-read identity after inference so changed files cannot inherit stale results.
             latest = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
             if fingerprint(latest) != task['fingerprint']:
@@ -295,6 +317,8 @@ class Worker:
                           (json.dumps(result,ensure_ascii=False),time.time(),task['path'],task['fingerprint']))
                 c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
             self.db.event(task['path'],'done','压缩视频识别完成' if 'video' in sample else '视频抽帧识别完成')
+            outcome = 'done'
+            report(stage='publishing')
             if sample.get('cover'):
                 try:
                     import base64
@@ -312,13 +336,17 @@ class Worker:
                 except Exception:self.db.event(task['path'],'warning','识别已完成，外部资料发布暂时失败，可重新同步')
         except Exception as exc:
             message = safe_error(exc)
+            activity_error = message
             with self.db.connect() as c:
                 run = c.execute('SELECT state FROM runs WHERE id=?',(task['run_id'],)).fetchone()
                 state = 'queued' if self.stop.is_set() else ('cancelled' if not run or run['state']=='cancelled' else 'failed')
+                outcome = state
                 c.execute('UPDATE tasks SET state=?,error=? WHERE id=?',(state,message,task['id']))
                 c.execute('UPDATE videos SET status=?,error=?,updated=? WHERE path=?',
                           ('pending' if state=='queued' else state,message,time.time(),task['path']))
             self.db.event(task['path'],state,message)
+        finally:
+            self.activity.finish(task['id'], outcome, activity_token, activity_error)
         return True
 
     def work_loop(self,index):

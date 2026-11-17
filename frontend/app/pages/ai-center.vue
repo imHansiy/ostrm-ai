@@ -14,6 +14,7 @@
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div v-for="stat in stats" :key="stat.label" class="stat-card"><p class="text-sm text-white/50">{{ stat.label }}</p><strong class="block text-3xl text-white mt-3">{{ stat.value.toLocaleString() }}</strong><p class="text-xs text-white/40 mt-3 leading-5">{{ stat.hint }}</p></div>
       </div>
+      <AiTaskActivity v-if="overview.activity" :activity="overview.activity" :last-success="overview.last_success" :queued="overview.tasks?.queued||0" :running="overview.tasks?.running||0" :paused="overview.recovery?.state==='paused' || Boolean(overview.scans?.paused)" :updated-at="progressReceivedAt" />
       <AiRecoveryProgress v-if="overview.recovery && overview.recovery.state !== 'disabled'" :plan="overview.recovery" />
       <p class="text-xs text-white/40" aria-live="polite">{{ progressError || (progressUpdated ? '进度每 5 秒自动刷新 · 最近更新 '+progressUpdated : '正在读取进度…') }}</p>
       <div class="card p-6"><h2 class="text-xl text-white font-semibold">从识别到入库</h2><div class="grid sm:grid-cols-3 gap-6 mt-6 text-sm"><div><b class="text-blue-300">01 配置与扫描</b><p class="text-white/50 mt-2 leading-7">连接在线 MiniCPM-V，设置目录、资源上限和定时扫描。</p></div><div><b class="text-blue-300">02 校对资料</b><p class="text-white/50 mt-2 leading-7">查看真实画面生成的简介与标签；人工标签在重新识别后保留。</p></div><div><b class="text-blue-300">03 导出与订阅</b><p class="text-white/50 mt-2 leading-7">生成 STRM/NFO、M3U、RSS、TVBox 或 Jellyfin 接入信息。</p></div></div></div>
@@ -39,6 +40,7 @@
     </section>
 
     <section v-if="tab === 'queue'" class="space-y-6">
+      <AiTaskActivity v-if="overview.activity" :activity="overview.activity" :last-success="overview.last_success" :queued="overview.tasks?.queued||0" :running="overview.tasks?.running||0" :paused="overview.recovery?.state==='paused' || Boolean(overview.scans?.paused)" :updated-at="progressReceivedAt" />
       <AiRecoveryProgress v-if="overview.recovery && overview.recovery.state !== 'disabled'" :plan="overview.recovery" />
       <form class="card p-6" @submit.prevent="scan"><h2 class="text-xl font-semibold text-white mb-4">目录识别任务</h2><label class="field">本次扫描目录，每行一个<textarea v-model="scanText" rows="3" class="input" required></textarea></label><div class="flex flex-wrap gap-4 mt-4 items-center"><label class="text-sm text-white/60"><input v-model="useSubtitles" type="checkbox"> 结合字幕识别</label><button class="btn-primary" :disabled="busy">开始扫描</button></div></form>
       <div class="card overflow-x-auto"><table class="w-full text-sm text-left"><thead class="text-white/40"><tr><th class="p-4">任务</th><th class="p-4">目录</th><th class="p-4">状态与进度</th><th class="p-4">操作</th></tr></thead><tbody class="text-white/75"><tr v-for="job in jobs" :key="job.id" class="border-t border-white/5"><td class="p-4">#{{ job.id }}</td><td class="p-4 break-all max-w-sm">{{ job.root }}</td><td class="p-4"><span>{{ jobStateLabels[job.state] || job.state }}</span><p v-if="job.tasks" class="text-xs leading-6 mt-2 text-white/50">视频：完成 {{ job.tasks.done || 0 }} · 排队 {{ job.tasks.queued || 0 }} · 处理中 {{ job.tasks.running || 0 }} · 失败 {{ job.tasks.failed || 0 }}</p><p v-if="job.directories" class="text-xs leading-6 text-white/40">目录：完成 {{ job.directories.done || 0 }} · 待检查 {{ job.directories.queued || 0 }} · 检查中 {{ job.directories.running || 0 }} · 失败 {{ job.directories.failed || 0 }}</p></td><td class="p-4"><div class="flex gap-2"><button v-for="action in actions(job.state)" :key="action.id" class="text-blue-300 text-xs" @click="jobAction(job.id, action.id)">{{ action.label }}</button></div></td></tr></tbody></table><p v-if="!jobs.length" class="p-6 text-white/40">暂无任务。</p></div>
@@ -78,7 +80,7 @@ const route=useRoute()
 const tabs=[{id:'overview',label:'总览'},{id:'settings',label:'模型与扫描'},{id:'queue',label:'识别任务'},{id:'library',label:'识别资料'},{id:'publications',label:'外部协议与导出'},{id:'tags',label:'标签规则'},{id:'history',label:'历史与错误日志'}]
 const tab=ref('overview'),busy=ref(false),message=ref(''),error=ref(''),overview=ref<Row>({}),settings=reactive<Row>({}),jobs=ref<Row[]>([])
 const jobStateLabels:Record<string,string>={running:'进行中',paused:'已暂停',done:'已结束',failed:'有失败项',cancelled:'已取消'}
-const progressUpdated=ref(''),progressError=ref('')
+const progressUpdated=ref(''),progressError=ref(''),progressReceivedAt=ref(0)
 const keyConfigured=ref(false),modelKey=ref(''),rootText=ref(''),excludeText=ref(''),extensionText=ref(''),scanText=ref(''),useSubtitles=ref(true)
 const coverBackfill=ref(false)
 const aliasText=ref(''),favoriteText=ref(''),historyRecords=ref<Row[]>([]),onlyErrors=ref(false)
@@ -97,7 +99,7 @@ const stats=computed(()=>{
     {label:'已入队待识别',value:tasks ? tasks.queued||0 : '—',hint:'仅当前队列，不含后续恢复批次'},
     {label:'正在识别',value:tasks ? tasks.running||0 : '—',hint:'当前正在处理的视频'}]
 })
-function setProgress(value:Row){overview.value=value;progressUpdated.value=new Date().toLocaleTimeString();progressError.value=''}
+function setProgress(value:Row){overview.value=value;progressReceivedAt.value=Date.now();progressUpdated.value=new Date().toLocaleTimeString();progressError.value=''}
 let progressRefreshing=false,queuesRefreshing=false
 async function refreshOverview(){if(progressRefreshing)return;progressRefreshing=true;try{setProgress(await api('/overview'))}catch{progressError.value='进度暂时无法刷新，当前显示上次数据'}finally{progressRefreshing=false}}
 const lines=(value:string)=>value.split(/\r?\n/).map(row=>row.trim()).filter(Boolean)

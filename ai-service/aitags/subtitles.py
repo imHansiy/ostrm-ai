@@ -129,6 +129,8 @@ def decode_with_ocr(args, timeout, interval, cancelled):
     cues = []
     errors = []
     count = [0]
+    from .activity import reporter
+    callback = reporter()
     proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     def consume():
@@ -143,6 +145,8 @@ def decode_with_ocr(args, timeout, interval, cancelled):
                 text = recognize_pgm(image,min(12,max(.1,deadline-time.monotonic())))
                 add_cue(cues,count[0]*interval,interval,text)
                 count[0] += 1
+                if callback:
+                    callback(process='subtitle_ocr',frame=count[0],out_seconds=count[0]*interval)
         except BaseException as exc:
             errors.append(exc)
 

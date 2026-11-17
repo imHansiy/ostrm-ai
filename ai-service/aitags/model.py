@@ -6,12 +6,21 @@ import httpx
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from . import config
 from .subtitles import transcript, identity_context
+from .activity import report
 
 
 def model_post(*args, **kwargs):
     """Retry explicit temporary rejections, never auth/policy errors or ambiguous timeouts."""
+    payload = kwargs.get('json') or {}
+    video = any(isinstance(message.get('content'),list) and any(part.get('type')=='video_url' for part in message['content'] if isinstance(part,dict)) for message in payload.get('messages',[]))
+    timeout = kwargs.get('timeout')
+    seconds = (timeout if isinstance(timeout,(int,float)) else getattr(timeout, 'read', None)) or 180
+    report(stage='model_video' if video else 'model_text', model_attempt=1, timeout_seconds=seconds,
+           new_model_request=True, deadline_at=time.time()+seconds)
     for attempt in range(3):
+        report(model_attempt=attempt+1, deadline_at=time.time()+seconds)
         response = httpx.post(*args, **kwargs)
+        report(advanced=True, model_http_status=response.status_code)
         if response.status_code not in (408,429,500,502,503,504) or attempt == 2:
             return response
         # Small bounded delay; do not obey unbounded server Retry-After values.
