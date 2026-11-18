@@ -178,13 +178,18 @@ class Publisher:
         row=self.db.one("SELECT * FROM videos WHERE path=? AND status='done'",(path,))
         if not row:return
         self.catalog.invalidate();public={**row,**self.db.public_video(row)};item=self.catalog.normalize(public,item_index)
+        failed = False
         for target in self.db.all('SELECT * FROM media_targets WHERE item_id=?',(item['id'],)):
             try:
                 with self.lock:result=self.write(self.directory(target['directory']),self.files(item,target['basename']))
                 self.db.execute('UPDATE media_targets SET updated=?,error=? WHERE id=?',
                     (time.time(),json.dumps(result,ensure_ascii=False),target['id']))
             except Exception as error:
+                failed = True
                 self.db.execute('UPDATE media_targets SET updated=?,error=? WHERE id=?',(time.time(),'资料写入失败：'+type(error).__name__,target['id']))
+
+        if failed:
+            raise RuntimeError('协议资料写入失败，将在后台重试')
 
     def start(self):
         self.db.execute("UPDATE media_export_jobs SET state='queued',updated=? WHERE state='running'",(time.time(),))

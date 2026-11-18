@@ -127,3 +127,14 @@ CI 工作流 `.github/workflows/ai-protocols.yml` 在 dev push 时执行，另�
 - [Infuse 网络共享](https://support.firecore.com/hc/en-us/articles/215090977-Streaming-From-a-Mac-PC-or-NAS)
 - [Jellyfin SDK](https://typescript-sdk.jellyfin.org/index.html)、[Jellyfin NFO](https://jellyfin.org/docs/general/server/metadata/nfo/)
 - [MiniCPM-V 官方项目](https://github.com/OpenBMB/MiniCPM-V)
+
+
+## 分阶段识别与后台资料发布
+
+识别沿用完整时间线压缩、原有模型及提示词，准备阶段同一时间只运行一个视频。默认识别并发为 1 时，最多领取两个视频：一个准备视频证据，另一个等待模型或保存结果；只有模型槽位空闲才会发送下一次识别请求。识别并发配置限制模型阶段并发，活动视频总数最多为 `min(4, 并发 + 1)`。等待模型槽位会在实时状态中单独显示，不虚构进度。
+
+任务仍使用原 `tasks` 表，领取后的准备/等待/识别均属于 running。暂停停止新领取，已领取的视频继续完成；取消在进入模型前和提交结果前检查。意外重启后 running 重新入队，完整压缩证据按原有缓存策略尽量复用，不会将只准备好的视频标记为成功。每个成功任务额外记录一条 performance 历史，区分证据准备、模型排队、模型及保存耗时。
+
+识别结果与 `postprocess_jobs` 后台任务在同一事务中保存。封面继续复用压缩时生成的画面，优先写私有封面缓存，再上传视频同目录；协议资料发布独立于识别槽位。上传失败不会阻止协议发布，也不会把成功识别改为失败。后台失败按 10 秒至 5 分钟退避重试；重启、SQLite/TiDB 迁移和完整备份保留未完成任务。重复执行采用同路径覆盖/版本核对，过期视频版本的任务会丢弃。
+
+此优化提高连续任务的吞吐量，不保证单部电影更快。首次处理长视频仍需读取和解码原片；外部模型、网盘网络及共享主机资源会影响实际速度。后台封面和导出文件可能比识别结果稍后可见。

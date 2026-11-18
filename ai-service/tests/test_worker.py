@@ -14,6 +14,7 @@ def test_recognition_reuses_local_artwork_without_cover_backfill(env,monkeypatch
     monkeypatch.setattr('aitags.worker.compress_video',lambda *args,**kwargs:{'cover':base64.b64encode(jpeg).decode()})
     monkeypatch.setattr('aitags.worker.infer',lambda *args,**kwargs:{'summary':'蓝色画面','tags':['蓝色']})
     assert w.work_once()
+    assert w.postprocess.once()
     row=db.one("SELECT * FROM videos WHERE path='/public/a.mp4'")
     assert row['status']=='done' and cached_cover(db,row['path'],row['fingerprint'])==jpeg
 

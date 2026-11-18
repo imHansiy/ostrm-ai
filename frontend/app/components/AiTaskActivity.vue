@@ -33,9 +33,10 @@
         <span v-if="job.fps"> · {{ Number(job.fps).toFixed(1) }} 帧/秒</span>
         <span v-if="job.speed"> · {{ Number(job.speed).toFixed(2) }} 倍速</span>
       </p>
+      <p v-if="job.stage==='waiting_model'" class="text-xs text-blue-200/80 leading-6 mt-3">完整视频证据已准备好，正在等待上一部视频完成模型处理；不会重新下载或压缩。</p>
       <p v-if="job.stage?.startsWith('model_')" class="text-xs text-blue-200/80 leading-6 mt-3">正在等待远端模型响应，期间不提供百分比。第 {{ job.model_request || 1 }} 次模型调用，当前第 {{ job.model_attempt || 1 }} 次尝试<span v-if="job.compressed_bytes">，压缩视频 {{ bytes(job.compressed_bytes) }}</span><span v-if="job.timeout_seconds">；本次读取超时设置 {{ job.timeout_seconds }} 秒</span>。</p>
       <p v-else-if="['reading','listing','probe'].includes(job.stage)" class="text-xs text-white/50 leading-6 mt-3">正在等待网盘数据或解析视频信息；长时间没有新增数据时，会按配置的超时结束本次请求并记录原因。</p>
-      <p v-else-if="job.progress_age_seconds>60" class="text-xs text-amber-200/80 leading-6 mt-3">近 {{ Math.floor(job.progress_age_seconds) }} 秒未观察到新增数据或画面进度，可能正在等待网络或处理当前帧；这不等同于已卡死。</p>
+      <p v-else-if="job.stage!=='waiting_model' && job.progress_age_seconds>60" class="text-xs text-amber-200/80 leading-6 mt-3">近 {{ Math.floor(job.progress_age_seconds) }} 秒未观察到新增数据或画面进度，可能正在等待网络或处理当前帧；这不等同于已卡死。</p>
     </article>
     <p v-if="!activity.active?.length" class="text-sm text-white/50 leading-7 mt-4">{{ running ? '队列记录中有识别中任务，尚未收到详细状态。' : (paused ? '队列已暂停，正在保留原有进度。' : (queued ? '队列正在等待领取下一条任务。' : '当前没有视频正在识别，后台会按恢复计划继续投放任务或复查目录。')) }}</p>
     <p v-if="lastSuccess" class="text-xs text-white/50 leading-6 mt-4 break-all">最近识别成功：{{ date(lastSuccess.created) }} · {{ lastSuccess.path.split('/').pop() }}</p>
@@ -54,7 +55,7 @@ const stale=computed(()=>props.updatedAt>0 && clock.value-props.updatedAt>20000)
 let freshnessTimer:ReturnType<typeof setInterval>|undefined
 onMounted(()=>{freshnessTimer=setInterval(()=>clock.value=Date.now(),1000)})
 onBeforeUnmount(()=>{if(freshnessTimer)clearInterval(freshnessTimer)})
-const stages:Record<string,string>={reading:'读取视频信息',listing:'读取网盘目录',indexing:'检查目录与登记文件',probe:'解析视频时长',decoding:'读取并生成视频中间文件',decode_subtitles:'读取视频并提取字幕',subtitle_layout:'探测画面字幕位置',encoding_analysis:'压缩分析（第一遍）',encoding:'压缩编码',validating:'校验完整视频时间轴',context_frames:'提取补充证据画面',sampling:'提取画面证据',cached:'复用已有证据',cover:'生成视频封面',model_video:'等待模型理解视频',model_text:'等待模型分析与整理结果',saving:'复核源文件并保存结果',publishing:'识别完成，保存封面与同步资料'}
+const stages:Record<string,string>={reading:'读取视频信息',listing:'读取网盘目录',indexing:'检查目录与登记文件',probe:'解析视频时长',decoding:'读取并生成视频中间文件',decode_subtitles:'读取视频并提取字幕',subtitle_layout:'探测画面字幕位置',encoding_analysis:'压缩分析（第一遍）',encoding:'压缩编码',validating:'校验完整视频时间轴',context_frames:'提取补充证据画面',sampling:'提取画面证据',cached:'复用已有证据',waiting_model:'证据已准备，等待模型处理槽位',cover:'生成视频封面',model_video:'等待模型理解视频',model_text:'等待模型分析与整理结果',saving:'复核源文件并保存结果',publishing:'识别完成，保存封面与同步资料'}
 const outcomes:Record<string,string>={done:'成功',failed:'失败',page_done:'已检查一页目录',queued:'等待继续',cancelled:'已取消'}
 function duration(value:unknown){const seconds=Math.max(0,Math.floor(Number(value)||0));return seconds>=3600?`${Math.floor(seconds/3600)} 小时 ${Math.floor(seconds%3600/60)} 分 ${seconds%60} 秒`:`${Math.floor(seconds/60)} 分 ${seconds%60} 秒`}
 function bytes(value:unknown){const count=Math.max(0,Number(value)||0);return count>=1024**3?`${(count/1024**3).toFixed(2)} GiB`:`${(count/1024**2).toFixed(2)} MiB`}

@@ -40,6 +40,10 @@ class Database:
               created REAL NOT NULL, state TEXT NOT NULL, message TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS aliases(alias TEXT PRIMARY KEY, canonical TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS favorites(tag TEXT PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS postprocess_jobs(
+              path TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, cover TEXT NOT NULL DEFAULT '',
+              created REAL NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+              next_attempt REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
             PRAGMA user_version=1;
             ''')
             if 'content_type' not in {row['name'] for row in c.execute('PRAGMA table_info(runs)')}:

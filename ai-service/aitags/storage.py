@@ -19,6 +19,7 @@ TABLES = {
     'history': 'id path created state message',
     'aliases': 'alias canonical',
     'favorites': 'tag',
+    'postprocess_jobs': 'path fingerprint cover created attempts next_attempt error',
 }
 
 SCHEMA = (
@@ -53,6 +54,11 @@ SCHEMA = (
       state VARCHAR(16) NOT NULL,message VARCHAR(1000) NOT NULL)""",
     "CREATE TABLE IF NOT EXISTS aliases (alias VARCHAR(40) PRIMARY KEY,canonical VARCHAR(40) NOT NULL)",
     "CREATE TABLE IF NOT EXISTS favorites (tag VARCHAR(40) PRIMARY KEY)",
+    """CREATE TABLE IF NOT EXISTS postprocess_jobs (
+      path TEXT NOT NULL,fingerprint CHAR(64) NOT NULL,cover LONGTEXT NOT NULL,
+      created DOUBLE NOT NULL,attempts INT NOT NULL DEFAULT 0,next_attempt DOUBLE NOT NULL DEFAULT 0,
+      error VARCHAR(1000) NOT NULL DEFAULT '',
+      path_key BINARY(32) AS (UNHEX(SHA2(path,256))) STORED UNIQUE,INDEX next_job(next_attempt))""",
 )
 
 

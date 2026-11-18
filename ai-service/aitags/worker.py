@@ -3,6 +3,7 @@ import json
 import posixpath
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from fastapi import HTTPException
 from . import config
@@ -14,6 +15,7 @@ from .evidence_cache import EvidenceCache
 from .lock import WorkerLock
 from .covers import extract_cover, save_cover, store_sidecar
 from .activity import Activity, report
+from .postprocess import Postprocess
 
 
 def fingerprint(obj):
@@ -48,13 +50,16 @@ class Worker:
         self.concurrency_checked = float('-inf')
         self.on_result = None
         self.activity = Activity()
+        self.stage_condition = threading.Condition()
+        self.stage_counts = {'prepare':0, 'model':0}
+        self.postprocess = Postprocess(db, ol, lambda path: self.on_result(path) if self.on_result else None)
         from .recovery import Recovery
         self.recovery = Recovery(db)
 
     def start(self):
         self.process_lock=WorkerLock(self.db.path+'.worker.lock')
         self.db.recover()
-        for fn, args in [(self.scan_loop, ()), (self.cover_loop, ()), *[(self.work_loop,(i,)) for i in range(4)]]:
+        for fn, args in [(self.scan_loop, ()), (self.cover_loop, ()), (self.postprocess_loop, ()), *[(self.work_loop,(i,)) for i in range(4)]]:
             t = threading.Thread(target=fn, args=args, daemon=True)
             t.start()
             self.threads.append(t)
@@ -75,10 +80,44 @@ class Worker:
                 self.db.event('/','warning','封面任务暂时失败')
             self.stop.wait(6)
 
+    def postprocess_loop(self):
+        while not self.stop.is_set():
+            try:
+                busy = self.postprocess.once()
+            except Exception:
+                busy = False
+            self.stop.wait(.5 if busy else 3)
+
+    @contextmanager
+    def stage(self, name, limit):
+        """Bound preparation and inference independently; release is idempotent."""
+        acquired = False
+        def release():
+            nonlocal acquired
+            with self.stage_condition:
+                if acquired:
+                    acquired = False
+                    self.stage_counts[name] -= 1
+                    self.stage_condition.notify_all()
+        try:
+            with self.stage_condition:
+                while self.stage_counts[name] >= limit and not self.stop.is_set():
+                    self.stage_condition.wait(.2)
+                if self.stop.is_set():
+                    yield None
+                    return
+                self.stage_counts[name] += 1
+                acquired = True
+            yield release
+        finally:
+            release()
+
     def cover_once(self):
         row = self.db.one("""SELECT v.path,v.fingerprint FROM videos v LEFT JOIN covers c
             ON v.path=c.path AND v.fingerprint=c.fingerprint
-            WHERE c.path IS NULL ORDER BY v.rowid LIMIT 1""")
+            WHERE c.path IS NULL AND NOT EXISTS (
+                SELECT 1 FROM postprocess_jobs p WHERE p.path=v.path AND p.fingerprint=v.fingerprint)
+            ORDER BY v.rowid LIMIT 1""")
         if not row:
             return
         path, version = row['path'], row['fingerprint']
@@ -226,6 +265,10 @@ class Worker:
             self.stop.wait(max(.1,self.db.settings()['scan_delay']) if busy else 5)
 
     def work_once(self):
+        with self.stage('prepare', 1) as release:
+            return self.prepare_once(release) if release else False
+
+    def prepare_once(self, release_prepare):
         with self.db.connect() as c:
             row = c.execute("SELECT t.*,r.content_type,r.use_subtitles FROM tasks t JOIN runs r ON r.id=t.run_id WHERE t.state='queued' AND r.state='running' ORDER BY t.id LIMIT 1").fetchone()
             if not row:
@@ -241,13 +284,15 @@ class Worker:
         run_cancelled = False
         activity_token = self.activity.begin({**task, 'size': current['size'] if current else 0})
         outcome, activity_error = 'failed', ''
+        started_at = time.monotonic()
+        prepared_at = model_at = None
 
-        def cancelled():
+        def cancelled(force=False):
             nonlocal next_cancel_check, run_cancelled
             if self.stop.is_set() or run_cancelled:
                 return True
             now = time.monotonic()
-            if now >= next_cancel_check:
+            if force or now >= next_cancel_check:
                 # FFmpeg and the HTTP gateway both poll this callback. Avoid a
                 # database round trip for every chunk of a remote video.
                 next_cancel_check = now + 1
@@ -301,39 +346,15 @@ class Worker:
                 save_subtitles(task['path'],task['fingerprint'],sample['subtitles'])
             if cancelled():
                 raise RuntimeError('任务已取消')
-            self.db.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
-            report(stage='model_video', deadline_at=time.time()+settings['model_timeout'])
-            result = infer(sample,settings)
-            report(stage='saving', deadline_at=time.time()+config.OPENLIST_SCAN_TIMEOUT)
-            # Re-read identity after inference so changed files cannot inherit stale results.
-            latest = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
-            if fingerprint(latest) != task['fingerprint']:
-                raise RuntimeError('识别期间视频发生变化，请重新扫描')
-            with self.db.connect() as c:
-                run = c.execute('SELECT state FROM runs WHERE id=?',(task['run_id'],)).fetchone()
-                if self.stop.is_set() or not run or run['state'] == 'cancelled':
+            report(stage='waiting_model')
+            prepared_at = time.monotonic()
+            release_prepare()
+            with self.stage('model', max(1, settings['concurrency'])) as slot:
+                if slot is None or cancelled(force=True):
                     raise RuntimeError('任务已取消')
-                c.execute("UPDATE videos SET status='done',result=?,error='',updated=? WHERE path=? AND fingerprint=?",
-                          (json.dumps(result,ensure_ascii=False),time.time(),task['path'],task['fingerprint']))
-                c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
-            self.db.event(task['path'],'done','压缩视频识别完成' if 'video' in sample else '视频抽帧识别完成')
+                model_at = time.monotonic()
+                self.recognize(task, sample, settings, cancelled)
             outcome = 'done'
-            report(stage='publishing')
-            if sample.get('cover'):
-                try:
-                    import base64
-                    from .covers import cached_cover
-                    if not cached_cover(self.db,task['path'],task['fingerprint']):
-                        jpeg=base64.b64decode(sample['cover'],validate=True)
-                        if not (0<len(jpeg)<=1024**2 and jpeg.startswith(b'\xff\xd8') and jpeg.endswith(b'\xff\xd9')):
-                            raise ValueError('Invalid cached cover')
-                        try:sidecar=store_sidecar(self.ol,task['path'],task['fingerprint'],jpeg,self.ol.admin_token())
-                        except Exception:sidecar=None
-                        save_cover(self.db,task['path'],task['fingerprint'],sidecar,jpeg)
-                except Exception:self.db.event(task['path'],'warning','识别已完成，封面可在后台补齐')
-            if self.on_result:
-                try:self.on_result(task['path'])
-                except Exception:self.db.event(task['path'],'warning','识别已完成，外部资料发布暂时失败，可重新同步')
         except Exception as exc:
             message = safe_error(exc)
             activity_error = message
@@ -346,8 +367,36 @@ class Worker:
                           ('pending' if state=='queued' else state,message,time.time(),task['path']))
             self.db.event(task['path'],state,message)
         finally:
+            if outcome == 'done':
+                try:
+                    self.db.event(task['path'], 'performance', json.dumps({
+                        'task_id':task['id'], 'prepare_seconds':round(prepared_at-started_at,3),
+                        'model_wait_seconds':round(model_at-prepared_at,3),
+                        'model_save_seconds':round(time.monotonic()-model_at,3),
+                    }, separators=(',',':')))
+                except Exception:
+                    pass  # Telemetry must never turn an already committed result into a failure.
             self.activity.finish(task['id'], outcome, activity_token, activity_error)
         return True
+
+    def recognize(self, task, sample, settings, cancelled):
+        self.db.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
+        report(stage='model_video', deadline_at=time.time()+settings['model_timeout'])
+        result = infer(sample,settings)
+        report(stage='saving', deadline_at=time.time()+config.OPENLIST_SCAN_TIMEOUT)
+        # Re-read identity after inference so changed files cannot inherit stale results.
+        latest = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
+        if fingerprint(latest) != task['fingerprint']:
+            raise RuntimeError('识别期间视频发生变化，请重新扫描')
+        with self.db.connect() as c:
+            run = c.execute('SELECT state FROM runs WHERE id=?',(task['run_id'],)).fetchone()
+            if self.stop.is_set() or not run or run['state'] == 'cancelled':
+                raise RuntimeError('任务已取消')
+            c.execute("UPDATE videos SET status='done',result=?,error='',updated=? WHERE path=? AND fingerprint=?",
+                      (json.dumps(result,ensure_ascii=False),time.time(),task['path'],task['fingerprint']))
+            c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
+            Postprocess.enqueue(c, task, sample.get('cover'))
+        self.db.event(task['path'],'done','压缩视频识别完成' if 'video' in sample else '视频抽帧识别完成')
 
     def work_loop(self,index):
         while not self.stop.is_set():
@@ -359,7 +408,7 @@ class Worker:
                         self.concurrency = self.db.settings()['concurrency']
                         self.concurrency_checked = now
                     concurrency = self.concurrency
-                if index < concurrency:
+                if index < min(4, concurrency + 1) and concurrency > 0:
                     busy=self.work_once()
             except Exception:
                 self.db.event('/','failed','识别调度失败')
