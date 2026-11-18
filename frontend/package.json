@@ -10,7 +10,8 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "lint": "eslint .",
-    "typecheck": "nuxt typecheck"
+    "typecheck": "nuxt typecheck",
+    "test:overview": "node --test tests/overview.test.mjs"
   },
   "dependencies": {
     "@nuxtjs/tailwindcss": "^6.12.1",

@@ -24,7 +24,7 @@
           <span>{{ job.kind==='directory' ? (job.processed_entries||0)+' / '+(job.total_entries||0)+' 项' : duration(job.out_seconds)+' / '+duration(job.duration) }}</span>
         </div>
         <div role="progressbar" :aria-label="job.kind==='directory'?'本页目录项处理':'当前阶段视频时轴进度'" :aria-valuenow="Number(job.stage_percent)" aria-valuemin="0" aria-valuemax="100" class="h-2 rounded-full bg-white/10 overflow-hidden"><div class="h-full rounded-full bg-blue-400 transition-all motion-reduce:transition-none" :style="{width:Number(job.stage_percent)+'%'}"></div></div>
-        <p class="text-xs text-white/40 mt-2">这是当前阶段的进度；压缩完成后还需要模型识别和结果保存。</p>
+        <p class="text-xs text-white/40 mt-2">{{ job.kind==='directory' ? '这是本页目录登记进度；后续可能还有子目录检查和视频识别。' : '这是当前阶段的进度；压缩完成后还需要模型识别和结果保存。' }}</p>
       </div>
       <p v-if="job.process" class="text-xs text-white/50 leading-6 mt-3">
         {{ job.process==='subtitle_ocr' ? '字幕识别' : (job.process.toLowerCase().startsWith('ffmpeg') ? '视频编码器' : '视频解析器') }}状态检查：{{ ago(job.heartbeat_age_seconds) }}

@@ -11,14 +11,7 @@
     </nav>
 
     <section v-if="tab === 'overview'" class="space-y-6">
-      <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div v-for="stat in stats" :key="stat.label" class="stat-card"><p class="text-sm text-white/50">{{ stat.label }}</p><strong class="block text-3xl text-white mt-3">{{ stat.value.toLocaleString() }}</strong><p class="text-xs text-white/40 mt-3 leading-5">{{ stat.hint }}</p></div>
-      </div>
-      <AiTaskActivity v-if="overview.activity" :activity="overview.activity" :last-success="overview.last_success" :queued="overview.tasks?.queued||0" :running="overview.tasks?.running||0" :paused="overview.recovery?.state==='paused' || Boolean(overview.scans?.paused)" :updated-at="progressReceivedAt" />
-      <AiRecoveryProgress v-if="overview.recovery && overview.recovery.state !== 'disabled'" :plan="overview.recovery" />
-      <p class="text-xs text-white/40" aria-live="polite">{{ progressError || (progressUpdated ? '进度每 5 秒自动刷新 · 最近更新 '+progressUpdated : '正在读取进度…') }}</p>
-      <div class="card p-6"><h2 class="text-xl text-white font-semibold">从识别到入库</h2><div class="grid sm:grid-cols-3 gap-6 mt-6 text-sm"><div><b class="text-blue-300">01 配置与扫描</b><p class="text-white/50 mt-2 leading-7">连接在线 MiniCPM-V，设置目录、资源上限和定时扫描。</p></div><div><b class="text-blue-300">02 校对资料</b><p class="text-white/50 mt-2 leading-7">查看真实画面生成的简介与标签；人工标签在重新识别后保留。</p></div><div><b class="text-blue-300">03 导出与订阅</b><p class="text-white/50 mt-2 leading-7">生成 STRM/NFO、M3U、RSS、TVBox 或 Jellyfin 接入信息。</p></div></div></div>
-      <div class="card p-6 text-sm text-white/60"><p>媒体输出目录：<code>{{ exportDirectory || '读取中…' }}</code></p><p class="mt-3">OpenList：{{ openlistUrl || '请先配置 AI 服务的 OpenList 连接' }}</p><p class="mt-3">原有 OStrm 任务可继续生成 STRM。启用自动 AI 入队后，新视频将进入持久化识别队列。</p></div>
+      <AiOverviewDashboard :overview="overview" :updated-at="progressReceivedAt" :progress-error="progressError" @navigate="changeTab" />
     </section>
 
     <section v-if="tab === 'settings'" class="space-y-6">
@@ -92,13 +85,6 @@ const library=ref<Row[]>([]),libraryTotal=ref(0),libraryPage=ref(1),libraryPages
 const detailDialog=ref<HTMLDialogElement|null>(null),tagDialog=ref<HTMLDialogElement|null>(null),detail=ref(''),editingPath=ref(''),manualTags=ref(''),removedTags=ref('')
 const numericFields=[{key:'interval_minutes',label:'自动扫描间隔（分钟，0 关闭）',min:0,max:10080},{key:'concurrency',label:'识别并发',min:1,max:4},{key:'video_num_frames',label:'模型视频帧数',min:0,max:128},{key:'context_frames',label:'补充证据帧数',min:0,max:8},{key:'max_video_bytes',label:'视频大小上限（字节）',min:1048576,max:1099511627776},{key:'max_network_bytes',label:'单视频读取流量上限（字节）',min:1048576,max:17179869184},{key:'media_timeout',label:'压缩与取字幕超时（秒）',min:10,max:7200},{key:'model_timeout',label:'推理超时（秒）',min:10,max:1800}]
 const linkLabels:Record<string,string>={strm_nfo_zip:'STRM＋NFO＋封面下载包',m3u:'扩展 M3U',rss:'RSS 2.0＋Media RSS',podcast:'视频播客 RSS',maccms:'苹果 CMS v10 JSON',tvbox:'TVBox 配置',tvbox_split:'TVBox 配置（成人 / 非成人分源）',libretv:'LibreTV 订阅',jellyfin_server:'Jellyfin 服务器地址',jellyfin_username:'Jellyfin 用户名',jellyfin_password:'Jellyfin 密码',webdav_server:'原 OpenList WebDAV 地址（使用原账户）',webdav_ai_server:'带 AI 资料的只读 WebDAV 地址',webdav_username:'只读 WebDAV 用户名',webdav_password:'只读 WebDAV 密码'}
-const stats=computed(()=>{
-  const videos=overview.value.videos,tasks=overview.value.tasks
-  return [{label:'已识别',value:videos ? videos.done||0 : '—',hint:'全库已完成识别的视频'},
-    {label:'尚未成功（全库）',value:videos ? Object.entries(videos).reduce((sum,[state,count])=>sum+(state==='done'?0:Number(count)),0) : '—',hint:'含失败、排队、处理中及已取消'},
-    {label:'已入队待识别',value:tasks ? tasks.queued||0 : '—',hint:'仅当前队列，不含后续恢复批次'},
-    {label:'正在识别',value:tasks ? tasks.running||0 : '—',hint:'当前正在处理的视频'}]
-})
 function setProgress(value:Row){overview.value=value;progressReceivedAt.value=Date.now();progressUpdated.value=new Date().toLocaleTimeString();progressError.value=''}
 let progressRefreshing=false,queuesRefreshing=false
 async function refreshOverview(){if(progressRefreshing)return;progressRefreshing=true;try{setProgress(await api('/overview'))}catch{progressError.value='进度暂时无法刷新，当前显示上次数据'}finally{progressRefreshing=false}}

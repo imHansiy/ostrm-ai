@@ -43,7 +43,7 @@ jobs:
       - run: python -m pytest ai-service/tests -q
       - run: chmod +x gradlew && ./gradlew test spotlessCheck bootJar --no-daemon --no-configuration-cache
         working-directory: backend
-      - run: npm ci --no-audit --no-fund && npm run generate
+      - run: npm ci --no-audit --no-fund && npm run test:overview && npm run generate
         working-directory: frontend
       - run: npm ci --no-audit --no-fund && npx playwright install --with-deps chromium
         working-directory: tests/clients

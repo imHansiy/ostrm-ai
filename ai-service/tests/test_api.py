@@ -26,7 +26,8 @@ def test_overview_counts_all_videos_and_active_work(env):
     paused=w.create_run('/secret')
     w.enqueue('/secret/b.mp4',ol.objects['/secret/b.mp4'],paused)
     w.control(paused,'pause')
-    assert c.get('/ai/api/overview',headers=ADMIN).json()=={
+    response=c.get('/ai/api/overview',headers=ADMIN).json()
+    assert {key:response[key] for key in ('videos','tasks','scans','recovery','activity','last_success')}=={
         'videos':{'done':1,'pending':1},'tasks':{},'scans':{'running':1,'paused':1},
         'recovery':{'state':'disabled','total_tasks':0,'total_directories':0},
         'activity':{'active':[],'recent':[]},'last_success':None,

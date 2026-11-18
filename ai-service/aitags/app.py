@@ -396,20 +396,8 @@ def create_app(db=None, ol=None, background=True):
     @app.get('/ai/api/overview')
     def overview(request:Request):
         auth(request,True)
-        with db.connect() as connection:
-            connection.execute('BEGIN')
-            videos={row['status']:row['n'] for row in connection.execute(
-                'SELECT status, COUNT(*) AS n FROM videos GROUP BY status')}
-            tasks={row['state']:row['n'] for row in connection.execute(
-                """SELECT t.state, COUNT(*) AS n FROM tasks t JOIN runs r ON r.id=t.run_id
-                   WHERE (t.state='queued' AND r.state='running') OR t.state='running'
-                   GROUP BY t.state""")}
-            scans={row['state']:row['n'] for row in connection.execute(
-                "SELECT state, COUNT(*) AS n FROM runs WHERE state IN ('running','paused') GROUP BY state")}
-        return {'videos':videos,'tasks':tasks,'scans':scans,
-                'recovery':worker.recovery.summary(worker.recovery.status()),
-                'activity':worker.activity.snapshot(),
-                'last_success':db.one("SELECT path,created FROM history WHERE state='done' ORDER BY id DESC LIMIT 1")}
+        from .overview import snapshot
+        return snapshot(db, worker)
 
     @app.post('/ai/api/library')
     def library(body:LibraryQuery,request:Request):
