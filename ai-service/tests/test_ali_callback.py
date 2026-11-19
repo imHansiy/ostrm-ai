@@ -1,7 +1,7 @@
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from urllib.request import build_opener, ProxyHandler
+from urllib.request import build_opener, ProxyHandler, Request
 import httpx
 import pytest
 from aitags import config, media
@@ -84,3 +84,35 @@ def test_callback_slot_is_held_until_body_close_across_gateways(monkeypatch):
         assert first.result(timeout=4)==b'video'
         assert second.result(timeout=4)==b'video'
     assert maximum==1 and active==0 and requests==2
+
+
+def test_seek_replaces_own_old_range_before_claiming_slot(monkeypatch):
+    real_client=httpx.Client;responses=[];active=0;maximum=0
+    class LongBody(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(2048):
+                yield b'x'*32768
+        def close(self):
+            nonlocal active
+            active-=1
+    def respond(request):
+        nonlocal active,maximum
+        if request.headers.get('Range')=='bytes=1024-1027':
+            maximum=max(maximum,active+1)
+            return httpx.Response(206,headers={'Content-Length':'4','Content-Range':'bytes 1024-1027/67108864','Accept-Ranges':'bytes, bytes'},stream=httpx.ByteStream(b'tail'))
+        active+=1;maximum=max(maximum,active)
+        response=httpx.Response(200,headers={'Content-Length':'67108864'},stream=LongBody())
+        responses.append(response);return response
+    monkeypatch.setattr(media,'approve_url',lambda *a:None)
+    monkeypatch.setattr(config,'MEDIA_PROXY_URL','')
+    monkeypatch.setattr(media.httpx,'Client',lambda **kw:real_client(transport=httpx.MockTransport(respond),**kw))
+    opener=build_opener(ProxyHandler({}))
+    with media.gateway('https://dl1.aliyundrive.cloud/movie','http://openlist',128*1024**2,10) as (url,used):
+        first=opener.open(url,timeout=3)
+        try:
+            with opener.open(Request(url,headers={'Range':'bytes=1024-1027'}),timeout=3) as second:
+                assert second.read()==b'tail'
+                assert second.headers.get('Accept-Ranges')=='bytes'
+            assert responses[0].is_closed
+        finally:first.close()
+    assert maximum==1 and active==0

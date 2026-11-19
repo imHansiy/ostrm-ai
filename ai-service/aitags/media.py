@@ -107,6 +107,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
     client = httpx.Client(timeout=15, follow_redirects=False, **proxy_options)
     callback = reporter()
     pending = [0, 0.0]
+    transfer_lock = threading.Lock()
+    active_transfer = [None]
 
     def flush_network(force=False):
         if callback and pending[0] and (force or time.monotonic() >= pending[1]):
@@ -129,6 +131,20 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 return
             response = None
             admitted = False
+            self.superseded = threading.Event()
+            if _ali_callback(url):
+                # FFmpeg opens the next Range before closing the old response.
+                # End only this video's superseded stream before waiting for
+                # the shared provider slot; other gateways keep their stream.
+                with transfer_lock:
+                    previous = active_transfer[0]
+                    active_transfer[0] = self
+                    if previous is not None:
+                        previous.superseded.set()
+                        try:
+                            previous.connection.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
             try:
                 if send_buffer_bytes is not None:
                     # Cover probes frequently seek away after reading a header.
@@ -140,6 +156,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 current = url
                 if _ali_callback(url):
                     while not _ALI_CALLBACK_SLOT.acquire(timeout=.1):
+                        if self.superseded.is_set():
+                            raise OSError('superseded media range')
                         if cancelled() or time.monotonic() >= deadline:
                             raise MediaError('媒体读取已停止或超时')
                         if callback:
@@ -152,7 +170,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                         headers.update(request_headers or {})
                     if self.headers.get('Range'):
                         headers['Range'] = self.headers['Range']
-                    response = _open_media_response(client, 'HEAD' if head else 'GET', current, headers, deadline, cancelled)
+                    response = _open_media_response(client, 'HEAD' if head else 'GET', current, headers, deadline,
+                                                    lambda: cancelled() or self.superseded.is_set())
                     if response.status_code in (301,302,303,307,308):
                         target = response.headers.get('location', '')
                         response.close()
@@ -163,16 +182,19 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                     status = response.status_code if response is not None else 502
                     raise MediaError(f'媒体源拒绝读取（HTTP {status}），请检查直链有效期和网盘下载权限')
                 self.send_response(response.status_code)
-                for key in ('Content-Length','Content-Range','Content-Type','Accept-Ranges'):
+                for key in ('Content-Length','Content-Range','Content-Type'):
                     if key in response.headers:
                         self.send_header(key, response.headers[key])
-                if (response.status_code == 206 and response.headers.get('Content-Range','').startswith('bytes ')
-                        and 'Accept-Ranges' not in response.headers):
+                if response.status_code == 206 and response.headers.get('Content-Range','').startswith('bytes '):
                     self.send_header('Accept-Ranges', 'bytes')
+                elif 'Accept-Ranges' in response.headers:
+                    self.send_header('Accept-Ranges',response.headers['Accept-Ranges'])
                 self.send_header('Connection', 'close')
                 self.end_headers()
                 if not head:
                     for chunk in response.iter_raw(chunk_size=32768):
+                        if self.superseded.is_set():
+                            raise OSError('superseded media range')
                         with lock:
                             if len(chunk) > remaining[0] or time.monotonic() >= deadline or cancelled():
                                 failures.append('媒体读取超过单片流量预算或超时，已停止下载')
@@ -183,9 +205,9 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                             flush_network()
                         self.wfile.write(chunk)
             except (httpx.HTTPError, OSError, MediaError) as error:
-                if isinstance(error, MediaError):
+                if isinstance(error, MediaError) and not self.superseded.is_set():
                     failures.append(str(error))
-                elif isinstance(error, httpx.HTTPError):
+                elif isinstance(error, httpx.HTTPError) and not self.superseded.is_set():
                     failures.append('媒体源连接或读取失败，请检查网盘/CDN 网络和限速')
                 self.close_connection = True
             finally:
@@ -197,6 +219,9 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 finally:
                     if admitted:
                         _ALI_CALLBACK_SLOT.release()
+                    with transfer_lock:
+                        if active_transfer[0] is self:
+                            active_transfer[0] = None
                 self.close_connection = True
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
