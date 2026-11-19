@@ -2,6 +2,7 @@
 import argparse
 import json
 import time
+import httpx
 from .openlist import clean_path
 
 KEY = 'failure_recovery'
@@ -126,6 +127,33 @@ class Recovery:
             c.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
         return self.summary(plan)
 
+    def model_tick(self, hold):
+        if time.time() < hold.get('next_check_at',0):
+            return False
+        from . import config
+        settings = self.db.settings()
+        ready = False
+        try:
+            response=httpx.post(settings['model_url'].rstrip('/')+'/chat/completions',
+                headers={'Authorization':'Bearer '+config.MODEL_KEY},
+                json={'model':settings['model_name'],'messages':[{'role':'user','content':'只回答正常'}],
+                      'max_tokens':8,'chat_template_kwargs':{'enable_thinking':False}},
+                timeout=15,proxy=config.MODEL_PROXY or None)
+            ready=response.status_code==200 and bool(response.json().get('choices'))
+        except (httpx.HTTPError,ValueError,AttributeError):
+            pass
+        with self.db.connect() as c:
+            row=c.execute('SELECT value FROM settings WHERE `key`=?',(KEY,)).fetchone()
+            plan=json.loads(row['value'])
+            if plan.get('model_hold') != hold or plan['state']!='running':
+                return False
+            if ready:
+                del plan['model_hold']
+            else:
+                plan['model_hold']={**hold,'checks':hold.get('checks',0)+1,'next_check_at':time.time()+300}
+            c.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
+        return False
+
     def tick(self):
         if time.monotonic() < self.next_check:
             return False
@@ -133,6 +161,8 @@ class Recovery:
         plan = self.status()
         if plan['state'] != 'running':
             return False
+        if plan.get('model_hold'):
+            return self.model_tick(plan['model_hold'])
         if plan.get('priority_state') == 'running':
             return self.priority_tick()
         if time.time() < plan['next_batch_at']:

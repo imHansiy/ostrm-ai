@@ -46,7 +46,15 @@ def _open_media_response(client, method, url, headers, deadline, cancelled):
     for attempt in range(4):
         if cancelled() or time.monotonic() >= deadline:
             raise MediaError('媒体读取已停止或超时')
-        response = client.send(client.build_request(method, url, headers=headers), stream=True)
+        try:
+            response = client.send(client.build_request(method, url, headers=headers), stream=True)
+        except (httpx.ConnectError,httpx.ConnectTimeout,httpx.ReadTimeout,httpx.RemoteProtocolError):
+            # GET/HEAD have no write side effects. Retry an interrupted initial
+            # handshake once, within the decoder's bounded read deadline.
+            if method not in ('GET','HEAD') or attempt >= 1:
+                raise
+            _callback_wait(.5,deadline,cancelled)
+            continue
         if not (_ali_callback(url) and response.status_code == 403):
             return response
         # Read a bounded provider error, never persist it or the signed URL.

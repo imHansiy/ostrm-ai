@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from . import config
 from .openlist import clean_path
 from .media import compress_video, sample_frames, refresh_context_frames
-from .model import infer
+from .model import infer, ModelRoutingError
 from .subtitles import save_subtitles
 from .evidence_cache import EvidenceCache
 from .lock import WorkerLock
@@ -299,6 +299,8 @@ class Worker:
         with self.db.connect() as c:
             plan_row = c.execute("SELECT value FROM settings WHERE `key`='failure_recovery'").fetchone()
             plan = json.loads(plan_row['value']) if plan_row else {}
+            if plan.get('model_hold') and plan.get('state') in ('running','paused'):
+                return False
             priority = plan.get('priority_ids',[]) if plan.get('state')=='running' and plan.get('priority_state')=='running' else []
             scope = ' AND t.id IN ('+','.join('?' for _ in priority)+')' if priority else ''
             row = c.execute("SELECT t.*,r.content_type,r.use_subtitles FROM tasks t JOIN runs r ON r.id=t.run_id WHERE t.state='queued' AND r.state='running'"+scope+" ORDER BY t.id LIMIT 1",priority).fetchone()
@@ -394,7 +396,13 @@ class Worker:
             activity_error = message
             with self.db.connect() as c:
                 run = c.execute('SELECT state FROM runs WHERE id=?',(task['run_id'],)).fetchone()
-                state = 'queued' if self.stop.is_set() else ('cancelled' if not run or run['state']=='cancelled' else 'failed')
+                plan_row=c.execute("SELECT value FROM settings WHERE `key`='failure_recovery'").fetchone() if isinstance(exc,ModelRoutingError) else None
+                plan=json.loads(plan_row['value']) if plan_row else {}
+                deferred=bool(run and run['state']!='cancelled' and plan and plan.get('state') in ('running','paused'))
+                state = 'queued' if self.stop.is_set() or deferred else ('cancelled' if not run or run['state']=='cancelled' else 'failed')
+                if deferred:
+                    plan.setdefault('model_hold',{'reason':'lis_global_ambiguous_model','message':message,'created':time.time(),'checks':0,'next_check_at':time.time()+300})
+                    c.execute("UPDATE settings SET value=? WHERE `key`='failure_recovery'",(json.dumps(plan),))
                 outcome = state
                 c.execute('UPDATE tasks SET state=?,error=? WHERE id=?',(state,message,task['id']))
                 c.execute('UPDATE videos SET status=?,error=?,updated=? WHERE path=?',
@@ -414,6 +422,9 @@ class Worker:
         return True
 
     def recognize(self, task, sample, settings, cancelled):
+        model_plan=self.recovery.status()
+        if model_plan.get('model_hold') and model_plan.get('state') in ('running','paused'):
+            raise ModelRoutingError('模型服务路由不可用，已保留任务和压缩证据，等待服务商恢复')
         self.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
         report(stage='model_video', deadline_at=time.time()+settings['model_timeout'])
         result = infer(sample,settings)

@@ -4,6 +4,30 @@ import pytest
 from aitags.media import iter_media_body, MediaError
 
 
+def test_initial_get_connection_failure_is_retried_once(monkeypatch):
+    from aitags.media import _open_media_response
+    monkeypatch.setattr('aitags.media._callback_wait',lambda *args:None)
+    requests=[]
+    def respond(request):
+        requests.append(request)
+        if len(requests)==1:raise httpx.ConnectError('temporary')
+        return httpx.Response(200,stream=httpx.ByteStream(b'ok'))
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        response=_open_media_response(client,'GET','https://source.test/video',{},time.monotonic()+10,lambda:False)
+        assert response.read()==b'ok' and len(requests)==2
+
+
+def test_initial_connection_retries_are_bounded(monkeypatch):
+    from aitags.media import _open_media_response
+    monkeypatch.setattr('aitags.media._callback_wait',lambda *args:None)
+    requests=[]
+    def fail(request):requests.append(request);raise httpx.ReadTimeout('temporary')
+    with httpx.Client(transport=httpx.MockTransport(fail)) as client:
+        with pytest.raises(httpx.ReadTimeout):
+            _open_media_response(client,'GET','https://source.test/video',{},time.monotonic()+10,lambda:False)
+    assert len(requests)==2
+
+
 class Interrupted(httpx.SyncByteStream):
     def __iter__(self):
         yield b'a'*32768

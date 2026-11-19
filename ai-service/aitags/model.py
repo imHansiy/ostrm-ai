@@ -9,6 +9,10 @@ from .subtitles import transcript, identity_context
 from .activity import report
 
 
+class ModelRoutingError(RuntimeError):
+    pass
+
+
 def model_post(*args, **kwargs):
     """Retry explicit temporary rejections, never auth/policy errors or ambiguous timeouts."""
     payload = kwargs.get('json') or {}
@@ -398,6 +402,12 @@ def infer(sample, settings, key=None):
         if status==413:
             raise RuntimeError('模型服务拒绝了视频请求体大小（HTTP 413）') from None
         if status==409:
+            try:
+                error=exc.response.json().get('error',{})
+            except (ValueError,AttributeError):
+                error={}
+            if isinstance(error,dict) and error.get('type')=='lis_global_ambiguous_model':
+                raise ModelRoutingError('模型服务路由不可用（HTTP 409）：同名模型对应多个推理服务，等待服务商恢复') from None
             raise RuntimeError('模型服务请求冲突（HTTP 409），本次未保存结果；请稍后重试或检查服务商控制台') from None
         raise RuntimeError(f'模型服务拒绝请求（HTTP {status}），请检查权限、额度和模型名称') from None
     except httpx.RequestError:
