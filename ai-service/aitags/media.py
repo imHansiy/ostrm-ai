@@ -226,6 +226,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                         headers.update(request_headers or {})
                     if self.headers.get('Range'):
                         headers['Range'] = self.headers['Range']
+                    if self.headers.get('If-Range'):
+                        headers['If-Range'] = self.headers['If-Range']
                     response = _open_media_response(client, 'HEAD' if head else 'GET', current, headers, deadline,
                                                     lambda: closed.is_set() or cancelled() or self.superseded.is_set())
                     if response.status_code in (301,302,303,307,308):
@@ -238,7 +240,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                     status = response.status_code if response is not None else 502
                     raise MediaError(f'媒体源拒绝读取（HTTP {status}），请检查直链有效期和网盘下载权限')
                 self.send_response(response.status_code)
-                for key in ('Content-Length','Content-Range','Content-Type'):
+                for key in ('Content-Length','Content-Range','Content-Type','ETag','Last-Modified'):
                     if key in response.headers:
                         self.send_header(key, response.headers[key])
                 if response.status_code == 206 and response.headers.get('Content-Range','').startswith('bytes '):
@@ -473,17 +475,38 @@ def prepared_video_source(url, openlist_url, settings, timeout, cancelled, reque
             report(stage='probe', process='download')
             try:
                 with httpx.Client(trust_env=False, timeout=45) as client:
-                    with client.stream('GET', source) as response:
-                        response.raise_for_status()
-                        size = 0
-                        with cached.open('wb') as output:
-                            for chunk in response.iter_bytes(32768):
-                                if cancelled() or time.monotonic() >= deadline:
-                                    raise MediaError('媒体读取已停止或超时')
-                                size += len(chunk)
-                                if size > limit or size > source_size:
-                                    raise MediaError('媒体大小变化或超过小视频缓存上限')
-                                output.write(chunk)
+                    size = 0
+                    validator = None
+                    with cached.open('wb') as output:
+                        while size < source_size:
+                            end = min(source_size,size+256*1024)-1
+                            headers = {'Range':f'bytes={size}-{end}'}
+                            if validator:
+                                headers['If-Range'] = validator
+                            with client.stream('GET',source,headers=headers) as response:
+                                response.raise_for_status()
+                                if response.status_code==206:
+                                    expected_range=f'bytes {size}-{end}/{source_size}'
+                                    etag=response.headers.get('ETag','')
+                                    identity=etag if etag and not etag.startswith('W/') else response.headers.get('Last-Modified','')
+                                    if response.headers.get('Content-Range')!=expected_range or not identity or (validator and validator!=identity):
+                                        raise MediaError('媒体文件变化或缺少一致的分段校验标识')
+                                    validator=identity
+                                    expected=end-size+1
+                                elif response.status_code==200 and size==0:
+                                    expected=source_size  # origins ignoring Range still support a whole read
+                                else:
+                                    raise MediaError('媒体源未接受安全的分段读取')
+                                received=0
+                                for chunk in response.iter_bytes(32768):
+                                    if cancelled() or time.monotonic() >= deadline:
+                                        raise MediaError('媒体读取已停止或超时')
+                                    size += len(chunk);received += len(chunk)
+                                    if size > limit or size > source_size or received > expected:
+                                        raise MediaError('媒体大小变化或超过小视频缓存上限')
+                                    output.write(chunk)
+                                if received != expected:
+                                    raise MediaError('媒体分段下载不完整，请稍后重试')
                 if size != source_size:
                     raise MediaError('媒体下载不完整，请稍后重试')
             except httpx.HTTPError:
