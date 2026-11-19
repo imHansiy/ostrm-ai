@@ -24,6 +24,47 @@ class MediaError(RuntimeError):
 
 
 FORMATS='mov,matroska,webm,avi,mpegts,flv,mpegvideo,asf'
+_ALI_CALLBACK_SLOT = threading.BoundedSemaphore(1)
+
+
+def _ali_callback(url):
+    return fnmatch.fnmatchcase((urlsplit(url).hostname or '').lower(), 'dl*.aliyundrive.cloud')
+
+
+def _callback_wait(delay, deadline, cancelled):
+    end = min(deadline, time.monotonic()+delay)
+    while time.monotonic() < end:
+        if cancelled():
+            raise MediaError('媒体读取已停止')
+        time.sleep(max(0, min(.1, end-time.monotonic())))
+    if cancelled() or time.monotonic() >= deadline:
+        raise MediaError('媒体读取已停止或超时')
+
+
+def _open_media_response(client, method, url, headers, deadline, cancelled):
+    for attempt in range(3):
+        if cancelled() or time.monotonic() >= deadline:
+            raise MediaError('媒体读取已停止或超时')
+        response = client.send(client.build_request(method, url, headers=headers), stream=True)
+        if not (_ali_callback(url) and response.status_code == 403):
+            return response
+        # Read a bounded provider error, never persist it or the signed URL.
+        body = bytearray()
+        try:
+            for chunk in response.iter_raw(chunk_size=4096):
+                body.extend(chunk[:65536-len(body)])
+                if len(body) >= 65536:
+                    break
+        except BaseException:
+            response.close()
+            raise
+        temporary = b'RequestDeniedByCallback' in body and b'ExceedMaxConcurrency' in body
+        if not temporary:
+            return response
+        response.close()
+        if attempt == 2:
+            raise MediaError('阿里云盘下载并发暂时受限，本次有限重试已用尽，请稍后恢复任务')
+        _callback_wait(.5 * 2**attempt, deadline, cancelled)
 
 
 def media_headers(url):
@@ -87,6 +128,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 self.send_error(404)
                 return
             response = None
+            admitted = False
             try:
                 if send_buffer_bytes is not None:
                     # Cover probes frequently seek away after reading a header.
@@ -96,6 +138,13 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 if time.monotonic() >= deadline or cancelled():
                     raise MediaError('媒体读取已停止')
                 current = url
+                if _ali_callback(url):
+                    while not _ALI_CALLBACK_SLOT.acquire(timeout=.1):
+                        if cancelled() or time.monotonic() >= deadline:
+                            raise MediaError('媒体读取已停止或超时')
+                        if callback:
+                            callback()
+                    admitted = True
                 for _ in range(6):
                     approve_url(current, openlist_url)
                     headers = media_headers(current)
@@ -103,8 +152,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                         headers.update(request_headers or {})
                     if self.headers.get('Range'):
                         headers['Range'] = self.headers['Range']
-                    request = client.build_request('HEAD' if head else 'GET', current, headers=headers)
-                    response = client.send(request, stream=True)
+                    response = _open_media_response(client, 'HEAD' if head else 'GET', current, headers, deadline, cancelled)
                     if response.status_code in (301,302,303,307,308):
                         target = response.headers.get('location', '')
                         response.close()
@@ -118,6 +166,9 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 for key in ('Content-Length','Content-Range','Content-Type','Accept-Ranges'):
                     if key in response.headers:
                         self.send_header(key, response.headers[key])
+                if (response.status_code == 206 and response.headers.get('Content-Range','').startswith('bytes ')
+                        and 'Accept-Ranges' not in response.headers):
+                    self.send_header('Accept-Ranges', 'bytes')
                 self.send_header('Connection', 'close')
                 self.end_headers()
                 if not head:
@@ -140,8 +191,12 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
             finally:
                 with lock:
                     flush_network(True)
-                if response:
-                    response.close()
+                try:
+                    if response:
+                        response.close()
+                finally:
+                    if admitted:
+                        _ALI_CALLBACK_SLOT.release()
                 self.close_connection = True
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -244,8 +299,9 @@ NATIVE_VIDEO_MAX_BYTES = 23 * 1024**2
 
 def video_duration(source, options, timeout, cancelled):
     probe = run_process([config.FFPROBE, '-v','error',*options,'-select_streams','V:0',
+                         '-probesize','5000000','-analyzeduration','5000000',
                          '-show_entries','stream=duration:format=duration','-of','json',source],
-                        timeout, cancelled)
+                        min(timeout, config.VIDEO_PROBE_TIMEOUT), cancelled)
     data = json.loads(probe)
     streams = data.get('streams', [])
     if not streams:
