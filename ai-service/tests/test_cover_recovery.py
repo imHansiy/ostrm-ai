@@ -39,7 +39,7 @@ def test_failed_cover_retries_after_cooldown_and_restart(env, monkeypatch):
             raise RuntimeError('temporary download failure')
         return JPEG
     monkeypatch.setattr('aitags.worker.extract_cover', extract)
-    monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
+    monkeypatch.setattr('aitags.postprocess.store_sidecar', lambda *a: None)
     worker.cover_once()
     assert not cached_cover(db, path, version)
     restarted = Worker(db, ol)
@@ -68,7 +68,7 @@ def test_backfill_rotates_past_cached_rows_and_failures(env, monkeypatch, tmp_pa
         return get(path, *args)
     monkeypatch.setattr(ol, 'get', source)
     monkeypatch.setattr('aitags.worker.extract_cover', lambda *a: JPEG)
-    monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
+    monkeypatch.setattr('aitags.postprocess.store_sidecar', lambda *a: None)
     worker.cover_once()
     worker.cover_once()
     assert cached not in reads and broken in reads and missing in reads
@@ -135,7 +135,7 @@ def test_native_thumbnail_avoids_large_video_download(env, monkeypatch):
     ol.objects[path]['thumb'] = 'https://media.example.test/thumbnail.jpg'
     monkeypatch.setattr('aitags.worker.read_sidecar', lambda *a: JPEG)
     monkeypatch.setattr('aitags.worker.extract_cover', lambda *a: (_ for _ in ()).throw(AssertionError('unnecessary video download')))
-    monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
+    monkeypatch.setattr('aitags.postprocess.store_sidecar', lambda *a: None)
     worker.cover_once()
     assert cached_cover(db, path, version) == JPEG
 
@@ -146,9 +146,29 @@ def test_unreadable_native_thumbnail_falls_back_to_video(env, monkeypatch):
     ol.objects[path]['thumb'] = 'https://media.example.test/expired.jpg'
     monkeypatch.setattr('aitags.worker.read_sidecar', lambda *a: (_ for _ in ()).throw(RuntimeError('unavailable')))
     monkeypatch.setattr('aitags.worker.extract_cover', lambda *a: JPEG)
-    monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
+    monkeypatch.setattr('aitags.postprocess.store_sidecar', lambda *a: None)
     worker.cover_once()
     assert cached_cover(db, path, version) == JPEG
+
+
+def test_backfilled_cover_does_not_wait_for_upload_or_publication(env, monkeypatch):
+    db, ol, worker, _ = env
+    path, version = video(env, 'background')
+    calls=[]
+    monkeypatch.setattr('aitags.worker.extract_cover', lambda *a: JPEG)
+    def upload(*a):
+        calls.append('upload')
+        raise HTTPException(403,'read-only')
+    monkeypatch.setattr('aitags.postprocess.store_sidecar',upload)
+    worker.on_result=lambda *a:calls.append('publish')
+    worker.cover_once()
+    assert cached_cover(db,path,version)==JPEG and calls==[]
+    assert db.one('SELECT attempts FROM postprocess_jobs')['attempts']==0
+    restarted=Worker(db,ol)
+    restarted.on_result=worker.on_result
+    assert restarted.postprocess.once()
+    assert calls==['upload','publish'] and cached_cover(db,path,version)==JPEG
+    assert db.one('SELECT attempts FROM postprocess_jobs')['attempts']==1
 
 
 @pytest.mark.skipif(not shutil.which(config.FFMPEG) or not shutil.which(config.FFPROBE), reason='requires ffmpeg and ffprobe')

@@ -83,8 +83,9 @@ def test_readonly_mount_keeps_private_cover(env,monkeypatch):
     monkeypatch.setattr('aitags.worker.extract_cover',lambda *args: JPEG)
     def refuse_write(*args):
         raise HTTPException(405,'只读挂载')
-    monkeypatch.setattr('aitags.worker.store_sidecar',refuse_write)
+    monkeypatch.setattr('aitags.postprocess.store_sidecar',refuse_write)
     worker.cover_once()
+    worker.postprocess.once()
     assert db.one('SELECT sidecar,jpeg FROM covers')=={'sidecar':None,'jpeg':JPEG}
 
 

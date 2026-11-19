@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import posixpath
@@ -13,7 +14,7 @@ from .model import infer
 from .subtitles import save_subtitles
 from .evidence_cache import EvidenceCache
 from .lock import WorkerLock
-from .covers import cached_cover, extract_cover, read_sidecar, save_cover, store_sidecar
+from .covers import cached_cover, extract_cover, read_sidecar, save_cover
 from .activity import Activity, report
 from .postprocess import Postprocess
 from .events import safe_event
@@ -138,7 +139,7 @@ class Worker:
         if row is None:
             return
         path, version = row['path'], row['fingerprint']
-        jpeg = sidecar = None
+        jpeg = None
         try:
             token = self.ol.admin_token()
             obj = self.ol.get(path,token)
@@ -157,17 +158,16 @@ class Worker:
                 return
             if fingerprint(self.ol.get(path,token))!=version:
                 raise RuntimeError('视频版本已变化')
-            try:
-                sidecar = store_sidecar(self.ol,path,version,jpeg,token)
-            except (HTTPException, KeyError, TypeError):
-                pass
         except Exception:
             jpeg = None
         if not self.stop.is_set():
-            save_cover(self.db,path,version,sidecar,jpeg)
-            if jpeg and self.on_result:
-                try:self.on_result(path)
-                except Exception:self.event(path,'warning','封面已缓存，资料发布可稍后重试')
+            if jpeg:
+                # Persist upload/publication work before exposing the cache.
+                # Slow read-only mounts must not hold up extraction of the next cover.
+                with self.db.connect() as connection:
+                    Postprocess.enqueue(connection, {'path':path,'fingerprint':version},
+                                        base64.b64encode(jpeg).decode('ascii'))
+            save_cover(self.db,path,version,None,jpeg)
 
     def create_run(self, root, content_type='auto', use_subtitles=False):
         root = clean_path(root)
