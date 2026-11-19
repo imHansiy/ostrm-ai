@@ -59,7 +59,11 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
     failures = []
     lock = threading.Lock()
     deadline = time.monotonic() + timeout
-    client = httpx.Client(timeout=15, follow_redirects=False)
+    proxy_options = {}
+    host = (urlsplit(url).hostname or '').lower()
+    if config.MEDIA_PROXY_URL and any(fnmatch.fnmatchcase(host, pattern) for pattern in config.MEDIA_PROXY_HOSTS):
+        proxy_options['proxy'] = config.MEDIA_PROXY_URL
+    client = httpx.Client(timeout=15, follow_redirects=False, **proxy_options)
     callback = reporter()
     pending = [0, 0.0]
 
