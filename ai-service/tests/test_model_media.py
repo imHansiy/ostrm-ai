@@ -152,7 +152,7 @@ def test_custom_provider_keeps_portable_request(monkeypatch):
     assert all('media_io_kwargs' not in r and 'chat_template_kwargs' not in r for r in requests)
 
 @pytest.mark.skipif(not shutil.which(FFMPEG) or not shutil.which('ffprobe'),reason='requires ffmpeg + ffprobe')
-def test_real_video_decode_and_budget(tmp_path):
+def test_real_video_decode_and_budget(tmp_path,monkeypatch):
     file=tmp_path/'sample.mp4'
     run_process([FFMPEG,'-v','error','-f','lavfi','-i','testsrc=duration=2:size=320x240:rate=10','-c:v','libx264','-pix_fmt','yuv420p','-movflags','+faststart',str(file)],30)
     long_file=tmp_path/'long.mp4'
@@ -180,6 +180,12 @@ def test_real_video_decode_and_budget(tmp_path):
         import base64
         assert base64.b64decode(video['cover']).startswith(b'\xff\xd8')
         assert video['encoding']['preset']=='veryfast' and video['encoding']['passes']==1
+        with monkeypatch.context() as patch:
+            patch.setattr('aitags.media._ali_callback',lambda _:True)
+            cached_video=compress_video(origin+'/sample.mp4',origin,settings,source_size=file.stat().st_size)
+            assert cached_video['duration']==pytest.approx(2,.1)
+            assert 0<cached_video['video_bytes']<=NATIVE_VIDEO_MAX_BYTES
+            assert cached_video['network_bytes']==file.stat().st_size
         long_video=compress_video(origin+'/long.mp4',origin,settings)
         assert long_video['duration']==pytest.approx(190,abs=.1)
         assert long_video['encoding']['passes']==2

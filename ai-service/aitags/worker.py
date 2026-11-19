@@ -361,7 +361,7 @@ class Worker:
                     report(stage='probe', deadline_at=time.time()+settings['media_timeout'])
                     self.event(task['path'],'processing','正在压缩完整视频与提取证据')
                     sample = compress_video(obj['raw_url'],self.ol.url,settings,cancelled,
-                                            subtitles=bool(task['use_subtitles']),**source_options)
+                                            subtitles=bool(task['use_subtitles']),source_size=obj.get('size',0),**source_options)
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:

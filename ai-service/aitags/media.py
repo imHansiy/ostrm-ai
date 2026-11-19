@@ -403,7 +403,40 @@ def refresh_context_frames(sample, url, openlist_url, settings, cancelled=lambda
             'network_bytes':sample.get('network_bytes',0)+used[0]}
 
 
-def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitles=False, request_headers=None):
+@contextmanager
+def prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size):
+    """Cache small callback-limited files once; preserve streaming for large inputs."""
+    limit = min(config.MEDIA_SMALL_CACHE_BYTES, settings['max_network_bytes'])
+    with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled,
+                 request_headers=request_headers) as (source, used):
+        if not (_ali_callback(url) and 0 < source_size <= limit):
+            yield source, used, False
+            return
+        deadline = time.monotonic()+timeout
+        with TemporaryDirectory(prefix='aitags-source-') as temp:
+            cached = Path(temp)/'source.video'
+            report(stage='probe', process='download')
+            try:
+                with httpx.Client(trust_env=False, timeout=30) as client:
+                    with client.stream('GET', source) as response:
+                        response.raise_for_status()
+                        size = 0
+                        with cached.open('wb') as output:
+                            for chunk in response.iter_bytes(32768):
+                                if cancelled() or time.monotonic() >= deadline:
+                                    raise MediaError('媒体读取已停止或超时')
+                                size += len(chunk)
+                                if size > limit or size > source_size:
+                                    raise MediaError('媒体大小变化或超过小视频缓存上限')
+                                output.write(chunk)
+                if size != source_size:
+                    raise MediaError('媒体下载不完整，请稍后重试')
+            except httpx.HTTPError:
+                raise MediaError('媒体源连接或读取失败，请检查网盘/CDN 网络和限速') from None
+            yield str(cached), used, True
+
+
+def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitles=False, request_headers=None, source_size=0):
     timeout = settings['media_timeout']
     deadline = time.monotonic() + timeout
     def remaining():
@@ -423,7 +456,9 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
         return sample
 
     http_options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','15000000']
-    with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled, request_headers=request_headers) as (source, used):
+    with prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size) as (source, used, local):
+        if local:
+            http_options = []
         report(stage='probe')
         duration = video_duration(source, http_options, remaining(), cancelled)
         report(duration=duration)
