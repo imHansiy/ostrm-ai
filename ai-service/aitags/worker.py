@@ -13,7 +13,7 @@ from .model import infer
 from .subtitles import save_subtitles
 from .evidence_cache import EvidenceCache
 from .lock import WorkerLock
-from .covers import extract_cover, save_cover, store_sidecar
+from .covers import cached_cover, extract_cover, save_cover, store_sidecar
 from .activity import Activity, report
 from .postprocess import Postprocess
 from .events import safe_event
@@ -49,6 +49,7 @@ class Worker:
         self.concurrency_lock = threading.Lock()
         self.concurrency = 0
         self.concurrency_checked = float('-inf')
+        self.cover_cursor = 0
         self.on_result = None
         self.activity = Activity()
         self.stage_condition = threading.Condition()
@@ -117,12 +118,24 @@ class Worker:
             release()
 
     def cover_once(self):
-        row = self.db.one("""SELECT v.path,v.fingerprint FROM videos v LEFT JOIN covers c
+        # A failed extraction still has a covers row. Revisit empty/evicted
+        # private covers after a cooldown, rotating past failures and cache hits.
+        rows = self.db.all("""SELECT v.rowid,v.path,v.fingerprint FROM videos v LEFT JOIN covers c
             ON v.path=c.path AND v.fingerprint=c.fingerprint
-            WHERE c.path IS NULL AND NOT EXISTS (
+            WHERE v.status='done' AND v.rowid>? AND
+                (c.path IS NULL OR (c.sidecar IS NULL AND c.updated<?)) AND NOT EXISTS (
                 SELECT 1 FROM postprocess_jobs p WHERE p.path=v.path AND p.fingerprint=v.fingerprint)
-            ORDER BY v.rowid LIMIT 1""")
-        if not row:
+            ORDER BY v.rowid LIMIT 64""", (self.cover_cursor, time.time()-600))
+        if not rows:
+            self.cover_cursor = 0
+            return
+        row = None
+        for candidate in rows:
+            self.cover_cursor = candidate['rowid']
+            if not cached_cover(self.db, candidate['path'], candidate['fingerprint']):
+                row = candidate
+                break
+        if row is None:
             return
         path, version = row['path'], row['fingerprint']
         jpeg = sidecar = None
