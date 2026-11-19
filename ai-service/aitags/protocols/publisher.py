@@ -13,6 +13,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from .formats import ai_document,nfo
 from .store import digest
+from ..events import safe_event
 
 
 def basename(value):
@@ -203,7 +204,7 @@ class Publisher:
                             publication=self.catalog.store.unpack(row)
                             if publication['sync_enabled'] and (not publication['expires'] or publication['expires']>time.time()):self.enqueue(publication)
                         last_sync=time.monotonic()
-                except Exception:self.db.event('/','warning','协议资料导出暂时失败，将在下一轮重试')
+                except Exception:safe_event(self.db,'/','warning','协议资料导出暂时失败，将在下一轮重试')
                 self.stop.wait(2)
         self.thread=threading.Thread(target=run,name='media-publisher',daemon=True);self.thread.start()
 

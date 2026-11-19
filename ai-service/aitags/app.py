@@ -216,8 +216,12 @@ def create_app(db=None, ol=None, background=True):
 
     @app.get('/ai/health')
     def health():
-        return {'status':'ok','version':'0.3.0','database':db.backend,
-                'worker_enabled':background,'worker_running':bool(worker.threads) and all(thread.is_alive() for thread in worker.threads)}
+        worker_running=bool(worker.threads) and all(thread.is_alive() for thread in worker.threads)
+        publisher_running=bool(publisher.thread) and publisher.thread.is_alive()
+        healthy=not background or (worker_running and publisher_running)
+        return JSONResponse({'status':'ok' if healthy else 'degraded','version':'0.3.0','database':db.backend,
+                'worker_enabled':background,'worker_running':worker_running,'publisher_running':publisher_running},
+                status_code=200 if healthy else 503)
 
     @app.get('/ai/exports',include_in_schema=False)
     def export_page():

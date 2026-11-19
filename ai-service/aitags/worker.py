@@ -16,6 +16,7 @@ from .lock import WorkerLock
 from .covers import extract_cover, save_cover, store_sidecar
 from .activity import Activity, report
 from .postprocess import Postprocess
+from .events import safe_event
 
 
 def fingerprint(obj):
@@ -56,6 +57,9 @@ class Worker:
         from .recovery import Recovery
         self.recovery = Recovery(db)
 
+    def event(self, path, state, message):
+        return safe_event(self.db, path, state, message)
+
     def start(self):
         self.process_lock=WorkerLock(self.db.path+'.worker.lock')
         self.db.recover()
@@ -77,7 +81,7 @@ class Worker:
                 if self.db.settings().get('cover_backfill'):
                     self.cover_once()
             except Exception:
-                self.db.event('/','warning','封面任务暂时失败')
+                self.event('/','warning','封面任务暂时失败')
             self.stop.wait(6)
 
     def postprocess_loop(self):
@@ -142,7 +146,7 @@ class Worker:
             save_cover(self.db,path,version,sidecar,jpeg)
             if jpeg and self.on_result:
                 try:self.on_result(path)
-                except Exception:self.db.event(path,'warning','封面已缓存，资料发布可稍后重试')
+                except Exception:self.event(path,'warning','封面已缓存，资料发布可稍后重试')
 
     def create_run(self, root, content_type='auto', use_subtitles=False):
         root = clean_path(root)
@@ -218,7 +222,7 @@ class Worker:
                     continue
                 if obj.get('is_dir'):
                     if row['depth'] >= settings['max_depth']:
-                        self.db.event(path,'skipped','超过目录深度上限')
+                        self.event(path,'skipped','超过目录深度上限')
                         continue
                     self.db.add_directory(row['run_id'],path,row['depth']+1)
                 elif posixpath.splitext(name)[1].lstrip('.').lower() in settings['extensions']:
@@ -233,7 +237,7 @@ class Worker:
             outcome, activity_error = 'failed', message
             self.db.execute("UPDATE directories SET state='failed' WHERE id=?",(row['id'],))
             self.db.execute('UPDATE runs SET error=? WHERE id=?',(message,row['run_id']))
-            self.db.event(row['path'],'failed',message)
+            self.event(row['path'],'failed',message)
         finally:
             self.activity.finish(row['id'],outcome,activity_token,activity_error,kind='directory')
         return True
@@ -248,8 +252,10 @@ class Worker:
     def scan_loop(self):
         while not self.stop.is_set():
             busy=False
+            delay=5
             try:
                 s = self.db.settings()
+                delay=max(.1,s['scan_delay'])
                 self.recovery.tick()
                 interval = s['interval_minutes'] * 60
                 last = self.db.one("SELECT value FROM settings WHERE `key`='last_schedule'")
@@ -261,8 +267,8 @@ class Worker:
                 self.finish_runs()
             except Exception:
                 # Keep service alive, but make orchestration failures observable without secrets.
-                self.db.event('/','failed','扫描调度失败，请检查配置和 OpenList 连接')
-            self.stop.wait(max(.1,self.db.settings()['scan_delay']) if busy else 5)
+                self.event('/','failed','扫描调度失败，请检查配置和 OpenList 连接')
+            self.stop.wait(delay if busy else 5)
 
     def work_once(self):
         with self.stage('prepare', 1) as release:
@@ -300,7 +306,7 @@ class Worker:
                 run_cancelled = not run or run['state'] == 'cancelled'
             return run_cancelled
         try:
-            self.db.event(task['path'],'processing','正在读取视频信息')
+            self.event(task['path'],'processing','正在读取视频信息')
             obj = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
             report(size=obj.get('size',0))
             if fingerprint(obj) != task['fingerprint']:
@@ -326,16 +332,16 @@ class Worker:
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:
-                        self.db.event(task['path'],'warning','补充画面缓存未能保存，本次继续识别')
+                        self.event(task['path'],'warning','补充画面缓存未能保存，本次继续识别')
                 if sample is None:
                     report(stage='probe', deadline_at=time.time()+settings['media_timeout'])
-                    self.db.event(task['path'],'processing','正在压缩完整视频与提取证据')
+                    self.event(task['path'],'processing','正在压缩完整视频与提取证据')
                     sample = compress_video(obj['raw_url'],self.ol.url,settings,cancelled,
                                             subtitles=bool(task['use_subtitles']))
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:
-                        self.db.event(task['path'],'warning','压缩证据缓存未能保存，本次继续识别')
+                        self.event(task['path'],'warning','压缩证据缓存未能保存，本次继续识别')
             else:
                 report(stage='sampling', deadline_at=time.time()+settings['media_timeout'])
                 sample = sample_frames(obj['raw_url'],self.ol.url,settings,cancelled)
@@ -365,11 +371,11 @@ class Worker:
                 c.execute('UPDATE tasks SET state=?,error=? WHERE id=?',(state,message,task['id']))
                 c.execute('UPDATE videos SET status=?,error=?,updated=? WHERE path=?',
                           ('pending' if state=='queued' else state,message,time.time(),task['path']))
-            self.db.event(task['path'],state,message)
+            self.event(task['path'],state,message)
         finally:
             if outcome == 'done':
                 try:
-                    self.db.event(task['path'], 'performance', json.dumps({
+                    self.event(task['path'], 'performance', json.dumps({
                         'task_id':task['id'], 'prepare_seconds':round(prepared_at-started_at,3),
                         'model_wait_seconds':round(model_at-prepared_at,3),
                         'model_save_seconds':round(time.monotonic()-model_at,3),
@@ -380,7 +386,7 @@ class Worker:
         return True
 
     def recognize(self, task, sample, settings, cancelled):
-        self.db.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
+        self.event(task['path'],'processing','视频证据已准备，正在调用模型识别')
         report(stage='model_video', deadline_at=time.time()+settings['model_timeout'])
         result = infer(sample,settings)
         report(stage='saving', deadline_at=time.time()+config.OPENLIST_SCAN_TIMEOUT)
@@ -396,7 +402,7 @@ class Worker:
                       (json.dumps(result,ensure_ascii=False),time.time(),task['path'],task['fingerprint']))
             c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
             Postprocess.enqueue(c, task, sample.get('cover'))
-        self.db.event(task['path'],'done','压缩视频识别完成' if 'video' in sample else '视频抽帧识别完成')
+        self.event(task['path'],'done','压缩视频识别完成' if 'video' in sample else '视频抽帧识别完成')
 
     def work_loop(self,index):
         while not self.stop.is_set():
@@ -411,7 +417,7 @@ class Worker:
                 if index < min(4, concurrency + 1) and concurrency > 0:
                     busy=self.work_once()
             except Exception:
-                self.db.event('/','failed','识别调度失败')
+                self.event('/','failed','识别调度失败')
             self.stop.wait(.5 if busy else 3)
 
     def control(self,rid,action):
