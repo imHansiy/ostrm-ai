@@ -1,10 +1,10 @@
 # 可选网盘云端出口
 
-用于服务器能访问 Cloudflare、但不能连接阿里/夸克/UC 官方 API 或指定下载 CDN 的场景。先确认挂载凭据有效，再验证这个出口能否连接目标。它依赖你的 Cloudflare 账户和部署服务器，不依赖个人电脑常驻，不运行模型，也不替代 OpenList 的登录和文件权限。
+用于服务器能访问 Cloudflare、但不能连接阿里/夸克/UC 官方 API、指定下载 CDN 或国内 ModelBest API 的场景。先确认凭据有效，再验证这个出口能否连接目标。它依赖你的 Cloudflare 账户和部署服务器，不依赖个人电脑常驻，不运行模型，也不替代 OpenList 的登录和文件权限。
 
 `OpenList / 指定媒体来源 → 本机鉴权 CONNECT 代理 → WSS → Cloudflare Worker → 官方 HTTPS`
 
-原始 TLS 在 OpenList/识别服务与网盘之间建立；不安装根证书、不关闭证书校验。Worker 只接受源码中的官方主机和 443 端口。其他 HTTPS 请求经本机代理直接连接。代理只监听 `[::1]:43647`，需要单独的随机口令；不要通过公网反代暴露它。
+原始 TLS 在 OpenList/识别服务与网盘或模型 API 之间建立；不安装根证书、不关闭证书校验，模型密钥不交给 Worker。Worker 只接受源码中的官方主机和 443 端口。其他 HTTPS 请求经本机代理直接连接。代理只监听 `[::1]:43647`，需要单独的随机口令；不要通过公网反代暴露它。
 
 ## 1. 部署 Worker
 
@@ -55,7 +55,18 @@ MEDIA_PROXY_HOSTS=dl1.aliyundrive.cloud
 
 ## 传输限制与排错
 
+国内模型服务需要中转时，在 AI 服务环境中单独配置：
+
+```dotenv
+MODEL_BASE_URL=https://api.modelbest.cn/v1
+MODEL_API_KEY=YOUR_DOMESTIC_MODELBEST_KEY
+MODEL_PROXY_URL=http://openlist:YOUR_PROXY_SECRET@[::1]:43647
+```
+
+国内和海外密钥需匹配各自区域。已有安装还应在「模型与扫描」中修改已保存的 API 地址；不要只修改环境默认值。先做连接测试，再用真实视频验证。中转不改变模型规格、提示词、整片压缩方式或原视频。
+
 - API 通道最长 120 秒，接收上限 16 MiB；指定 CDN 通道最长 30 分钟，接收上限 3 GiB。仍受插件本身的单片流量、压缩、磁盘和超时限制。
+- `api.modelbest.cn` 使用独立的双向流控，单连接最长 10 分钟、上传上限 64 MiB、下行上限 16 MiB；上传未确认窗口不超过 512 KiB，每帧最多 32 KiB，避免视频上传挤满 Worker 内存。64 MiB 是传输保护上限，插件和模型服务本身更小的请求体限制仍然生效。
 - CDN 使用确认帧限制发送窗口，避免慢客户端导致无限缓存。单帧至多 32 KiB，最多约 2 MiB 或 1,024 帧未确认；按字节限制避免上游小包导致吞吐过低。
 - 下载期间客户端可能只接收而不再发送数据。不能给上传方向设置固定读取超时，否则会中断正常长视频。桥接保留上游空闲超时和连接总时长限制。
 - `401` 表示中转密钥不匹配；`403` 表示目标不在白名单或下载通道未启用流控；`502` 表示云端尚未连通目标。网盘自身的令牌过期仍需按驱动规则刷新。
@@ -64,4 +75,4 @@ MEDIA_PROXY_HOSTS=dl1.aliyundrive.cloud
 
 回退时先删除相关进程的代理环境变量并重启，再停桥接，最后删除你账户中的这个 Worker。原有挂载和识别数据库不需要删除。
 
-测试：`python -m pytest test_bridge_stream.py`（需安装 pytest 和 requirements.txt）。回归测试会持续下载而保持上传方向静默，检查不会提前断流。
+测试：`python -m pytest test_bridge_stream.py`（需安装 pytest 和 requirements.txt）。回归测试验证持续下载时上传方向静默不会提前断流，以及大请求上传的确认窗口和内容完整性；另用 `npm run check` 验证 Worker 构建。

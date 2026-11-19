@@ -5,6 +5,7 @@ const targets = Object.freeze({
   'openapi.alipan.com': '/adrive/v1.0/user/getDriveInfo',
   'drive.quark.cn': '/1/clouddrive/config?pr=ucpro&fr=pc',
   'pc-api.uc.cn': '/1/clouddrive/config?pr=UCBrowser&fr=pc',
+  'api.modelbest.cn': '/v1/models',
 });
 function authorized(request, secret) {
   if (!secret || secret.length < 32) return false;
@@ -16,12 +17,15 @@ export default {
   async fetch(request, env, ctx) {
     if (!authorized(request, env.RELAY_SECRET)) return new Response('Unauthorized', {status: 401});
     const url = new URL(request.url);
-    if (url.pathname === '/health') return Response.json({ok: true, version: 1});
+    if (url.pathname === '/health') return Response.json({ok: true, version: 2});
     const host = url.searchParams.get('host');
     const media = /^(dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn)$/.test(host || '');
+    const model = host === 'api.modelbest.cn';
     const flow = url.searchParams.get('flow') === 'ack';
+    const uploadFlow = url.searchParams.get('upload') === 'ack';
     if (!Object.hasOwn(targets, host) && !media) return new Response('Forbidden target', {status: 403});
     if (media && (url.pathname !== '/connect' || !flow)) return new Response('Flow control required', {status: 403});
+    if (model && url.pathname === '/connect' && (!flow || !uploadFlow)) return new Response('Bidirectional flow control required', {status: 403});
     if (url.pathname === '/tcp-probe') {
       let sock;
       try {
@@ -71,7 +75,7 @@ export default {
       try { server.close(1000); } catch {}
       void socket.close().catch(() => {});
     };
-    const timer = setTimeout(close, media ? 1800000 : 120000);
+    const timer = setTimeout(close, model ? 600000 : (media ? 1800000 : 120000));
     server.binaryType = 'arraybuffer';
     server.accept();
     server.addEventListener('close', close);
@@ -86,10 +90,11 @@ export default {
       const bytes = new Uint8Array(event.data);
       incoming += bytes.byteLength;
       pending += bytes.byteLength;
-      if (incoming > 8*1024*1024 || pending > 1024*1024) { close(); return; }
+      if (incoming > (model ? 64*1024*1024 : 8*1024*1024) || pending > 1024*1024) { close(); return; }
       chain = chain.then(async () => {
         if (!stopped) await writer.write(bytes);
         pending -= bytes.byteLength;
+        if (uploadFlow && !stopped) server.send('uack');
       }).catch(close);
     });
     ctx.waitUntil((async () => {

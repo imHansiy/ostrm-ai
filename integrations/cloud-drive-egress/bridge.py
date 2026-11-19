@@ -1,10 +1,12 @@
 """Authenticated loopback CONNECT proxy; official API TLS stays end-to-end."""
 import base64,hmac,json,socket,socketserver,threading,select,time,re
+from collections import deque
 from pathlib import Path
 import websocket
 
 CONFIG=json.loads(Path(__file__).with_name('bridge.private.json').read_text())
 TARGETS={'openapi.alipan.com','drive.quark.cn','pc-api.uc.cn','dl1.aliyundrive.cloud','dl-pc-zb.drive.quark.cn'}
+MODEL_HOSTS={'api.modelbest.cn'}
 SLOTS=threading.BoundedSemaphore(16)
 
 class Proxy(socketserver.BaseRequestHandler):
@@ -36,11 +38,12 @@ class Proxy(socketserver.BaseRequestHandler):
         host,port=target.rsplit(':',1);host=host.strip('[]').lower();port=int(port)
         if method!='CONNECT' or port!=443 or not host or len(host)>253:
             client.sendall(b'HTTP/1.1 403 Forbidden\r\n\r\n');return
-        cloud=host in TARGETS or bool(re.fullmatch(r'dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn',host))
+        upload_flow=host in MODEL_HOSTS
+        cloud=host in TARGETS or upload_flow or bool(re.fullmatch(r'dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn',host))
         upstream=None
         try:
             if cloud:
-                upstream=websocket.create_connection(CONFIG['url']+'/connect?host='+host+'&flow=ack',
+                upstream=websocket.create_connection(CONFIG['url']+'/connect?host='+host+'&flow=ack'+('&upload=ack' if upload_flow else ''),
                     header={'Authorization':'Bearer '+CONFIG['secret']},timeout=30,
                     http_no_proxy=['*'],enable_multithread=True)
             else: upstream=socket.create_connection((host,port),timeout=20)
@@ -51,23 +54,32 @@ class Proxy(socketserver.BaseRequestHandler):
         # Downloads are unidirectional after the HTTP request. A receive timeout
         # here would kill an actively downloading video after 90 seconds.
         client.settimeout(None)
-        upstream.settimeout(90)
+        upstream.settimeout(600 if upload_flow else 90)
         stop=threading.Event()
+        credit=threading.Condition();unacked=deque();inflight=[0]
         def finish():
             stop.set()
+            with credit:credit.notify_all()
             try: client.shutdown(socket.SHUT_RDWR)
             except OSError:pass
             try:upstream.close()
             except Exception:pass
+        def send_cloud(data):
+            if upload_flow:
+                with credit:
+                    while inflight[0]>=512*1024 and not stop.is_set():credit.wait(timeout=1)
+                    if stop.is_set():return
+                    unacked.append(len(data));inflight[0]+=len(data)
+            upstream.send_binary(data)
         def upload():
             try:
                 if tail:
-                    if cloud:upstream.send_binary(tail)
+                    if cloud:send_cloud(tail)
                     else:upstream.sendall(tail)
                 while not stop.is_set():
                     data=client.recv(32768)
                     if not data:break
-                    if cloud:upstream.send_binary(data)
+                    if cloud:send_cloud(data)
                     else:upstream.sendall(data)
             except Exception:pass
             finally:finish()
@@ -76,6 +88,11 @@ class Proxy(socketserver.BaseRequestHandler):
             while not stop.is_set():
                 data=upstream.recv() if cloud else upstream.recv(32768)
                 if not data:break
+                if upload_flow and data=='uack':
+                    with credit:
+                        if unacked:inflight[0]-=unacked.popleft()
+                        credit.notify_all()
+                    continue
                 if not isinstance(data,bytes):break
                 client.sendall(data)
                 if cloud:upstream.send('ack')
