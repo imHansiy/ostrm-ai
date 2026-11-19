@@ -48,6 +48,16 @@ def test_optional_cinema_keeps_openlist_and_ai_routes_separate(tmp_path):
     assert '@CINEMA_LOCATION@' not in conf
 
 
+def test_video_mount_preserves_old_links_and_queries(tmp_path):
+    result=prepare(tmp_path,CINEMA_ENABLED='true',CINEMA_BASE_PATH='/video')
+    assert result.returncode==0,result.stderr
+    conf=(tmp_path/'runtime/nginx.conf').read_text(encoding='utf-8')
+    assert 'location ~ ^/video(?:/|$)' in conf
+    assert 'location = /cinema { return 302 /video$is_args$args; }' in conf
+    assert 'location ~ ^/cinema(/.*)$ { return 302 /video$1$is_args$args; }' in conf
+    assert prepare(tmp_path/'invalid',CINEMA_ENABLED='true',CINEMA_BASE_PATH='/video;bad').returncode!=0
+
+
 @pytest.mark.parametrize('options',[{'NATIVE_AI_HOST':'0.0.0.0'},{'NATIVE_APP_PREFIX':'/bad;prefix'},
                                     {'NATIVE_GATEWAY_PORT':'80'},{'OPENLIST_URL':'http://user:password@localhost:5244'}])
 def test_invalid_runtime_configuration_fails_before_start(tmp_path,options):

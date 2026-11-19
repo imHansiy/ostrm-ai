@@ -132,7 +132,10 @@ http {
     for name,host in hosts.items():source=source.replace('@'+name.upper()+'_HOST@','['+host+']' if ':' in host else host)
     cinema=''
     if os.getenv('CINEMA_ENABLED','false').lower() in ('1','true'):
-        cinema='''location ~ ^/cinema(?:/|$) {
+        cinema_path=os.getenv('CINEMA_BASE_PATH','/cinema').strip('/')
+        if not cinema_path or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_' for c in cinema_path):
+            raise SystemExit('CINEMA_BASE_PATH must be one local URL segment')
+        cinema='''location ~ ^/@CINEMA_PATH@(?:/|$) {
             proxy_pass http://[::1]:43648;
             proxy_set_header Host $host;
             proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
@@ -142,7 +145,12 @@ http {
             proxy_read_timeout 120s;
             proxy_buffering off;
             client_max_body_size 1m;
-        }'''
+        }'''.replace('@CINEMA_PATH@',cinema_path)
+        if cinema_path!='cinema':
+            cinema+='''
+        location = /cinema { return 302 /@CINEMA_PATH@$is_args$args; }
+        location ~ ^/cinema(/.*)$ { return 302 /@CINEMA_PATH@$1$is_args$args; }
+        '''.replace('@CINEMA_PATH@',cinema_path)
     source=source.replace('@CINEMA_LOCATION@',cinema)
     (ROOT/'runtime/nginx.conf').write_text(source,encoding='utf-8')
     print('Native runtime paths and gateway configuration prepared.')

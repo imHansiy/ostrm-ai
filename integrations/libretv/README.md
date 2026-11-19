@@ -25,6 +25,8 @@ NEXT_PUBLIC_BASE_PATH=/cinema DOCKER_BUILD=1 npm run build
 
 应用放在 OStrm 目录的同级 `libretv`，例如 `~/apps/ostrm-ai` 与 `~/apps/libretv`。OStrm `.env` 设置 `CINEMA_ENABLED=true` 后，网关将 `/cinema` 交给影院，原生启动器将其加入已有自愈启动流程。默认 Node 使用 `[::1]:43648`，与 IPv4 回环上的 Java/AI 分开；先验证目标主机可用此地址和端口，不增加新的端口预留。
 
+如需入口 `/video`，构建时改用 `NEXT_PUBLIC_BASE_PATH=/video`，并在 OStrm `.env` 设置 `CINEMA_BASE_PATH=/video`。影院 `.env` 也同步设置 `NEXT_PUBLIC_BASE_PATH=/video`。重新部署构建并重新生成、加载网关配置；旧 `/cinema` 及其子路径会保留查询参数跳转到新入口。Next.js 的子路径需要重新构建，仅改反代路径不能同步浏览器脚本和静态资源地址。
+
 单独配置影院 `.env` 的访问密码、独立会话密钥及成人/非成人 CMS 订阅。两组订阅使用不同的范围授权；不要把 OpenList 管理 Token 或模型密钥填入来源地址。未登录不返回来源配置和媒体数据。
 
 使用原版搜索、详情和播放流程，顶部新增“我的网盘”入口，进入 `/cinema/library` 分页海报页，支持成人／非成人、类型、年份、关键词及排序；首页推荐和播放器界面保持原版。两个源在“设置 → 源管理”中选择；原版搜索中的成人源默认受原版过滤控制，需要在“偏好设置 → 首页与内容”关闭“成人内容过滤”后启用；独立网盘页直接用其范围按钮切换。MP4/WebM 等原文件走原生 video，HLS 继续走 LibreTV 的 HLS 播放链路。容器或编码不受浏览器支持时，仍需外部播放器。来源中的新增识别结果会随 CMS 接口更新，可通过原版搜索和网盘目录找到；目录有短期缓存，详见部署说明。
