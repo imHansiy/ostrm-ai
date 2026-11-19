@@ -4,6 +4,7 @@ import fnmatch
 import ipaddress
 import json
 import math
+import re
 import socket
 import subprocess
 import threading
@@ -79,6 +80,49 @@ def media_headers(url):
     return headers
 
 
+def iter_media_body(client, response, url, headers, deadline, cancelled):
+    """Resume only an unchanged, byte-addressable entity after a broken read."""
+    match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response.headers.get('Content-Range', ''))
+    length = response.headers.get('Content-Length', '')
+    start = int(match[1]) if match else 0
+    end = int(match[2])+1 if match else (int(length) if length.isdigit() else None)
+    total = int(match[3]) if match else end
+    etag = response.headers.get('ETag', '')
+    validator = etag if etag and not etag.startswith('W/') else response.headers.get('Last-Modified', '')
+    resumable = (end is not None and validator and
+                 (match or 'bytes' in response.headers.get('Accept-Ranges', '').lower()) and
+                 response.headers.get('Content-Encoding', 'identity').lower() == 'identity')
+    position = start
+    current = response
+    try:
+        for attempt in range(4):
+            try:
+                for chunk in current.iter_raw(chunk_size=32768):
+                    if end is not None and position+len(chunk) > end:
+                        raise MediaError('媒体读取长度与源文件声明不一致')
+                    position += len(chunk)
+                    yield chunk
+                if end is None or position == end:
+                    return
+                raise httpx.ReadError('incomplete media body')
+            except (httpx.ReadError, httpx.ReadTimeout, httpx.RemoteProtocolError):
+                if not resumable or attempt == 3:
+                    raise MediaError('媒体源连接中断，无法安全续传或有限重试已用尽') from None
+                current.close()
+                _callback_wait(.5 * 2**attempt, deadline, cancelled)
+                resumed_headers = {**headers, 'Range':f'bytes={position}-{end-1}', 'If-Range':validator}
+                current = _open_media_response(client, 'GET', url, resumed_headers, deadline, cancelled)
+                resumed_range = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', current.headers.get('Content-Range', ''))
+                current_validator = current.headers.get('ETag' if validator == etag else 'Last-Modified', '')
+                if (current.status_code != 206 or not resumed_range or
+                    tuple(map(int, resumed_range.groups())) != (position, end-1, total) or
+                    current_validator != validator or
+                    current.headers.get('Content-Encoding', 'identity').lower() != 'identity'):
+                    raise MediaError('媒体源不支持安全续传或文件已变化，请重新获取媒体地址')
+    finally:
+        current.close()
+
+
 def approve_url(url, openlist_url):
     p = urlsplit(url)
     host = (p.hostname or '').lower()
@@ -112,6 +156,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
     pending = [0, 0.0]
     transfer_lock = threading.Lock()
     active_transfer = [None]
+    closed = threading.Event()
 
     def flush_network(force=False):
         if callback and pending[0] and (force or time.monotonic() >= pending[1]):
@@ -154,14 +199,14 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                     # Limit abandoned read-ahead; full-video transfers keep defaults.
                     self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, send_buffer_bytes)
                     self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                if time.monotonic() >= deadline or cancelled():
+                if closed.is_set() or time.monotonic() >= deadline or cancelled():
                     raise MediaError('媒体读取已停止')
                 current = url
                 if _ali_callback(url):
                     while not _ALI_CALLBACK_SLOT.acquire(timeout=.1):
                         if self.superseded.is_set():
                             raise OSError('superseded media range')
-                        if cancelled() or time.monotonic() >= deadline:
+                        if closed.is_set() or cancelled() or time.monotonic() >= deadline:
                             raise MediaError('媒体读取已停止或超时')
                         if callback:
                             callback()
@@ -174,7 +219,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                     if self.headers.get('Range'):
                         headers['Range'] = self.headers['Range']
                     response = _open_media_response(client, 'HEAD' if head else 'GET', current, headers, deadline,
-                                                    lambda: cancelled() or self.superseded.is_set())
+                                                    lambda: closed.is_set() or cancelled() or self.superseded.is_set())
                     if response.status_code in (301,302,303,307,308):
                         target = response.headers.get('location', '')
                         response.close()
@@ -195,11 +240,12 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 self.send_header('Connection', 'close')
                 self.end_headers()
                 if not head:
-                    for chunk in response.iter_raw(chunk_size=32768):
+                    for chunk in iter_media_body(client, response, current, headers, deadline,
+                                                 lambda: closed.is_set() or cancelled() or self.superseded.is_set()):
                         if self.superseded.is_set():
                             raise OSError('superseded media range')
                         with lock:
-                            if len(chunk) > remaining[0] or time.monotonic() >= deadline or cancelled():
+                            if len(chunk) > remaining[0] or closed.is_set() or time.monotonic() >= deadline or cancelled():
                                 failures.append('媒体读取超过单片流量预算或超时，已停止下载')
                                 break
                             remaining[0] -= len(chunk)
@@ -207,10 +253,10 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                             pending[0] += len(chunk)
                             flush_network()
                         self.wfile.write(chunk)
-            except (httpx.HTTPError, OSError, MediaError) as error:
-                if isinstance(error, MediaError) and not self.superseded.is_set():
+            except (httpx.HTTPError, OSError, RuntimeError) as error:
+                if isinstance(error, MediaError) and not self.superseded.is_set() and not closed.is_set():
                     failures.append(str(error))
-                elif isinstance(error, httpx.HTTPError) and not self.superseded.is_set():
+                elif isinstance(error, (httpx.HTTPError,RuntimeError)) and not self.superseded.is_set() and not closed.is_set():
                     failures.append('媒体源连接或读取失败，请检查网盘/CDN 网络和限速')
                 self.close_connection = True
             finally:
@@ -239,6 +285,7 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 raise MediaError(failures[-1]) from None
             raise
     finally:
+        closed.set()
         server.shutdown()
         server.server_close()
         client.close()
@@ -417,7 +464,7 @@ def prepared_video_source(url, openlist_url, settings, timeout, cancelled, reque
             cached = Path(temp)/'source.video'
             report(stage='probe', process='download')
             try:
-                with httpx.Client(trust_env=False, timeout=30) as client:
+                with httpx.Client(trust_env=False, timeout=45) as client:
                     with client.stream('GET', source) as response:
                         response.raise_for_status()
                         size = 0
@@ -455,7 +502,7 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
         except (MediaError,OSError):pass
         return sample
 
-    http_options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','15000000']
+    http_options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','45000000']
     with prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size) as (source, used, local):
         if local:
             http_options = []

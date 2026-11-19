@@ -297,7 +297,11 @@ class Worker:
 
     def prepare_once(self, release_prepare):
         with self.db.connect() as c:
-            row = c.execute("SELECT t.*,r.content_type,r.use_subtitles FROM tasks t JOIN runs r ON r.id=t.run_id WHERE t.state='queued' AND r.state='running' ORDER BY t.id LIMIT 1").fetchone()
+            plan_row = c.execute("SELECT value FROM settings WHERE `key`='failure_recovery'").fetchone()
+            plan = json.loads(plan_row['value']) if plan_row else {}
+            priority = plan.get('priority_ids',[]) if plan.get('state')=='running' and plan.get('priority_state')=='running' else []
+            scope = ' AND t.id IN ('+','.join('?' for _ in priority)+')' if priority else ''
+            row = c.execute("SELECT t.*,r.content_type,r.use_subtitles FROM tasks t JOIN runs r ON r.id=t.run_id WHERE t.state='queued' AND r.state='running'"+scope+" ORDER BY t.id LIMIT 1",priority).fetchone()
             if not row:
                 return False
             task = dict(row)

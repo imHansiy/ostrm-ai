@@ -80,6 +80,61 @@ def test_manual_retry_never_requeues_historical_success(env):
     assert db.one('SELECT status FROM videos')['status'] == 'done'
 
 
+def test_scoped_batches_survive_restart_without_waiting_for_unrelated_queue(env,monkeypatch):
+    db,ol,worker,_=env
+    failed(env,['/public/a.mp4','/public/b.mp4','/public/c.mp4'])
+    recovery=Recovery(db);recovery.start(1,0,rounds=1,interval=0)
+    plan=recovery.status();original_cursor=plan['task_cursor']
+    ids=plan['task_ids'][:]
+    db.execute("UPDATE videos SET status='done',result=? WHERE path='/public/c.mp4'",(json.dumps({'summary':'preserve','tags':['manual']}),))
+    success=db.one("SELECT * FROM videos WHERE path='/public/c.mp4'")
+    unrelated=worker.create_run('/public')
+    ol.objects['/public/new.mp4']=dict(ol.objects['/public/a.mp4'])
+    worker.enqueue('/public/new.mp4',ol.objects['/public/new.mp4'],unrelated)
+    plan.update(priority_ids=ids,priority_state='running',priority_cursor=0,priority_current=[],priority_batch_size=1)
+    db.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
+    monkeypatch.setattr('aitags.worker.compress_video',lambda *a,**k:{})
+    monkeypatch.setattr('aitags.worker.infer',lambda *a,**k:{'summary':'recognized','tags':['scene']})
+    assert Recovery(db).tick()
+    assert worker.work_once()
+    # During the gap between batches, do not claim an unrelated long video.
+    assert not worker.work_once()
+    assert Recovery(db).tick()
+    assert worker.work_once()
+    assert not Recovery(db).tick()  # successful third candidate is skipped
+    after=Recovery(db).status()
+    assert after['priority_state']=='done' and after['task_cursor']==original_cursor
+    assert db.one("SELECT * FROM videos WHERE path='/public/c.mp4'")==success
+    assert db.one("SELECT state FROM tasks WHERE path='/public/new.mp4'")['state']=='queued'
+    assert worker.work_once()  # normal queue resumes after scoped batches
+
+
+def test_scoped_retry_respects_excluded_roots_and_pause(env):
+    db,ol,worker,_=env
+    failed(env,['/public/a.mp4','/offline/a.mp4'])
+    recovery=Recovery(db);recovery.start(1,0,rounds=1,interval=0,exclude_roots=['/offline'])
+    plan=recovery.status()
+    plan.update(priority_ids=[r['id'] for r in db.all('SELECT id FROM tasks ORDER BY id')],priority_state='running',priority_batch_size=2,priority_cursor=0)
+    db.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
+    recovery.control('pause');assert not Recovery(db).tick()
+    recovery.control('resume');assert Recovery(db).tick()
+    assert db.one("SELECT state FROM tasks WHERE path='/offline/a.mp4'")['state']=='failed'
+
+
+def test_priority_setup_is_bounded_and_never_replaces_active_progress(env):
+    db,ol,worker,_=env
+    failed(env,['/public/a.mp4'])
+    recovery=Recovery(db);recovery.start(1,0,rounds=1,interval=0,paused=True)
+    before=recovery.status();identifier=before['task_ids'][0]
+    result=recovery.prioritize([identifier,identifier],3)
+    assert result['priority_total']==1 and result['state']=='paused'
+    after=recovery.status()
+    assert after['task_cursor']==before['task_cursor'] and after['task_ids']==before['task_ids']
+    with pytest.raises(RuntimeError):recovery.prioritize([identifier])
+    with pytest.raises(ValueError):recovery.prioritize(list(range(1,202)))
+    with pytest.raises(ValueError):recovery.prioritize([identifier],0)
+
+
 def test_failed_directories_make_run_failed(env):
     db, ol, worker, _ = env
     run = worker.create_run('/')

@@ -65,17 +65,77 @@ class Recovery:
 
     @staticmethod
     def summary(plan):
-        result = {k: v for k, v in plan.items() if k not in ('task_ids', 'directory_ids')}
+        result = {k: v for k, v in plan.items() if k not in ('task_ids', 'directory_ids', 'priority_ids')}
         result['total_tasks'] = len(plan.get('task_ids', []))
         result['total_directories'] = len(plan.get('directory_ids', []))
+        if 'priority_ids' in plan:
+            result['priority_total'] = len(plan['priority_ids'])
         return result
+
+    def priority_tick(self):
+        # Explicit scoped retries can drain ahead of newly discovered videos.
+        # Their cursor is separate: never reset the historical recovery plan.
+        with self.db.connect() as c:
+            row = c.execute('SELECT value FROM settings WHERE `key`=?', (KEY,)).fetchone()
+            plan = json.loads(row['value'])
+            if plan['state'] != 'running' or plan.get('priority_state') != 'running':
+                return False
+            current = plan.get('priority_current', [])
+            if current:
+                slots = ','.join('?' for _ in current)
+                if c.execute(f"SELECT id FROM tasks WHERE id IN ({slots}) AND state IN ('queued','running') LIMIT 1",current).fetchone():
+                    return False
+            if time.time() < plan.get('priority_next_at', 0):
+                return False
+            ids, cursor = plan['priority_ids'], plan.get('priority_cursor', 0)
+            selected = []
+            limit = max(1,min(10,plan.get('priority_batch_size',3)))
+            stop = min(len(ids),cursor+200)
+            while cursor < stop and len(selected) < limit:
+                identifier = ids[cursor]; cursor += 1
+                task = c.execute("""SELECT t.id,t.path,t.run_id FROM tasks t JOIN videos v ON v.path=t.path
+                    JOIN runs r ON r.id=t.run_id WHERE t.id=? AND t.state='failed' AND v.status='failed'
+                    AND r.state IN ('running','done','failed') AND NOT EXISTS(
+                    SELECT 1 FROM tasks live WHERE live.path=t.path AND live.state IN ('queued','running'))""",(identifier,)).fetchone()
+                if not task or any(task['path']==root or task['path'].startswith(root.rstrip('/')+'/') for root in plan.get('exclude_roots',[])):
+                    continue
+                c.execute("UPDATE tasks SET state='queued',error='',fingerprint=(SELECT fingerprint FROM videos WHERE videos.path=tasks.path) WHERE id=?",(identifier,))
+                c.execute("UPDATE videos SET status='pending',error='' WHERE path=? AND status='failed'",(task['path'],))
+                c.execute("UPDATE runs SET state='running',error='' WHERE id=?",(task['run_id'],))
+                selected.append(identifier)
+            plan.update(priority_cursor=cursor,priority_current=selected,
+                        priority_next_at=time.time()+plan.get('interval',30))
+            if not selected and cursor >= len(ids):
+                plan['priority_state'] = 'done'
+            c.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
+        return bool(selected)
+
+    def prioritize(self, task_ids, batch_size=3):
+        ids = list(dict.fromkeys(task_ids))
+        if not ids or len(ids)>200 or any(not isinstance(i,int) or i<=0 for i in ids) or not 1<=batch_size<=10:
+            raise ValueError('Specify 1–200 task IDs and a batch size of 1–10')
+        with self.db.connect() as c:
+            row = c.execute('SELECT value FROM settings WHERE `key`=?',(KEY,)).fetchone()
+            plan = json.loads(row['value']) if row else {}
+            if plan.get('state') not in ('running','paused'):
+                raise RuntimeError('请先创建或恢复历史失败恢复计划')
+            if plan.get('priority_state')=='running':
+                raise RuntimeError('已有定向恢复批次，请等待完成或停止恢复计划')
+            plan.update(priority_ids=ids,priority_cursor=0,priority_current=[],priority_state='running',
+                        priority_batch_size=batch_size,priority_next_at=0)
+            c.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
+        return self.summary(plan)
 
     def tick(self):
         if time.monotonic() < self.next_check:
             return False
         self.next_check = time.monotonic() + 10
         plan = self.status()
-        if plan['state'] != 'running' or time.time() < plan['next_batch_at']:
+        if plan['state'] != 'running':
+            return False
+        if plan.get('priority_state') == 'running':
+            return self.priority_tick()
+        if time.time() < plan['next_batch_at']:
             return False
         # Existing active work (including newly discovered files) drains before the next batch.
         if self.db.one("SELECT t.id FROM tasks t JOIN runs r ON r.id=t.run_id WHERE t.state IN ('queued','running') AND r.state='running' LIMIT 1"):
@@ -153,7 +213,9 @@ class Recovery:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'status', 'pause', 'resume', 'stop'])
+    parser.add_argument('action', choices=['start', 'status', 'pause', 'resume', 'stop', 'prioritize'])
+    parser.add_argument('--task-ids', nargs='+', type=int, default=[])
+    parser.add_argument('--priority-batch-size', type=int, default=3)
     parser.add_argument('--batch-size', type=int, default=20)
     parser.add_argument('--directory-batch-size', type=int, default=3)
     parser.add_argument('--rounds', type=int, default=2)
@@ -168,6 +230,8 @@ def main():
         result = recovery.start(args.batch_size, args.directory_batch_size, args.rounds, args.interval, args.paused, args.exclude_root)
     elif args.action == 'status':
         result = recovery.summary(recovery.status())
+    elif args.action == 'prioritize':
+        result = recovery.prioritize(args.task_ids,args.priority_batch_size)
     else:
         result = recovery.control(args.action)
     print(json.dumps(result, ensure_ascii=False))
