@@ -119,3 +119,25 @@ def test_cache_restore_skips_stale_and_invalid_images_and_is_bounded(env):
     assert worker.postprocess.restore_covers(limit=1) == 1
     assert db.one('SELECT COUNT(*) AS n FROM covers')['n'] == 2
     assert db.one('SELECT COUNT(*) AS n FROM postprocess_jobs')['n'] == 4
+
+
+def test_native_thumbnail_avoids_large_video_download(env, monkeypatch):
+    db, ol, worker, _ = env
+    path, version = video(env, 'native')
+    ol.objects[path]['thumb'] = 'https://media.example.test/thumbnail.jpg'
+    monkeypatch.setattr('aitags.worker.read_sidecar', lambda *a: JPEG)
+    monkeypatch.setattr('aitags.worker.extract_cover', lambda *a: (_ for _ in ()).throw(AssertionError('unnecessary video download')))
+    monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
+    worker.cover_once()
+    assert cached_cover(db, path, version) == JPEG
+
+
+def test_unreadable_native_thumbnail_falls_back_to_video(env, monkeypatch):
+    db, ol, worker, _ = env
+    path, version = video(env, 'fallback')
+    ol.objects[path]['thumb'] = 'https://media.example.test/expired.jpg'
+    monkeypatch.setattr('aitags.worker.read_sidecar', lambda *a: (_ for _ in ()).throw(RuntimeError('unavailable')))
+    monkeypatch.setattr('aitags.worker.extract_cover', lambda *a: JPEG)
+    monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
+    worker.cover_once()
+    assert cached_cover(db, path, version) == JPEG

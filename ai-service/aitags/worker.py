@@ -13,7 +13,7 @@ from .model import infer
 from .subtitles import save_subtitles
 from .evidence_cache import EvidenceCache
 from .lock import WorkerLock
-from .covers import cached_cover, extract_cover, save_cover, store_sidecar
+from .covers import cached_cover, extract_cover, read_sidecar, save_cover, store_sidecar
 from .activity import Activity, report
 from .postprocess import Postprocess
 from .events import safe_event
@@ -144,7 +144,15 @@ class Worker:
             obj = self.ol.get(path,token)
             if obj.get('is_dir') or fingerprint(obj)!=version:
                 raise RuntimeError('视频版本已变化')
-            jpeg = extract_cover(obj['raw_url'],self.ol.url,self.stop.is_set)
+            # Cloud-provided video thumbnails avoid probing a large container
+            # just to recover one frame. Keep the same bounded, approved reader.
+            if obj.get('thumb'):
+                try:
+                    jpeg = read_sidecar(obj['thumb'], self.ol.url)
+                except (HTTPException, RuntimeError, KeyError, ValueError, OSError):
+                    pass
+            if not jpeg:
+                jpeg = extract_cover(obj['raw_url'],self.ol.url,self.stop.is_set)
             if self.stop.is_set():
                 return
             if fingerprint(self.ol.get(path,token))!=version:
