@@ -152,7 +152,7 @@ class Worker:
                 except (HTTPException, RuntimeError, KeyError, ValueError, OSError):
                     pass
             if not jpeg:
-                jpeg = extract_cover(obj['raw_url'],self.ol.url,self.stop.is_set)
+                jpeg = extract_cover(obj['raw_url'],self.ol.url,self.stop.is_set,obj.get('size',0))
             if self.stop.is_set():
                 return
             if fingerprint(self.ol.get(path,token))!=version:

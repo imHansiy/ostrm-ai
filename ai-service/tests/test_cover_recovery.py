@@ -1,5 +1,11 @@
 import base64
 import time
+import shutil
+import threading
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+import pytest
 
 from fastapi import HTTPException
 
@@ -7,6 +13,8 @@ from aitags.covers import cached_cover, save_cover
 from aitags.db import Database
 from aitags.postprocess import Postprocess
 from aitags.worker import Worker, fingerprint
+from aitags import config
+from aitags.media import MediaError, run_process
 from .conftest import add_video
 
 
@@ -141,3 +149,71 @@ def test_unreadable_native_thumbnail_falls_back_to_video(env, monkeypatch):
     monkeypatch.setattr('aitags.worker.store_sidecar', lambda *a: None)
     worker.cover_once()
     assert cached_cover(db, path, version) == JPEG
+
+
+@pytest.mark.skipif(not shutil.which(config.FFMPEG) or not shutil.which(config.FFPROBE), reason='requires ffmpeg and ffprobe')
+def test_fragmented_mp4_cover_survives_index_probe_failure(tmp_path, monkeypatch):
+    from aitags.covers import extract_cover, COVER_MAX_BYTES
+    path=tmp_path/'fragmented.mp4'
+    run_process([config.FFMPEG,'-v','error','-f','lavfi','-i','testsrc=duration=2:size=160x120:rate=5',
+                 '-c:v','libx264','-pix_fmt','yuv420p','-movflags','frag_keyframe+empty_moov',str(path)],30)
+    class Quiet(SimpleHTTPRequestHandler):
+        def log_message(self,*args):pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),partial(Quiet,directory=str(tmp_path)))
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    origin=f'http://127.0.0.1:{server.server_port}'
+    monkeypatch.setattr('aitags.covers.video_duration',lambda *a: (_ for _ in ()).throw(MediaError('probe budget exhausted')))
+    try:
+        jpeg=extract_cover(origin+'/fragmented.mp4',origin,lambda:False)
+        from PIL import Image
+        import io
+        with Image.open(io.BytesIO(jpeg)) as image:
+            assert image.format=='JPEG' and image.width==480
+        assert 0<len(jpeg)<=COVER_MAX_BYTES
+    finally:
+        server.shutdown();server.server_close();thread.join(timeout=2)
+
+
+def test_cancelled_cover_does_not_start_fallback(monkeypatch):
+    from aitags import covers
+    attempts=[]
+    def extract(*args):
+        attempts.append(1)
+        raise MediaError('cancelled')
+    monkeypatch.setattr(covers,'_extract_cover',extract)
+    with pytest.raises(MediaError):covers.extract_cover('unused','unused',lambda:True)
+    assert attempts==[1]
+
+
+@pytest.mark.skipif(not shutil.which(config.FFMPEG) or not shutil.which(config.FFPROBE), reason='requires ffmpeg and ffprobe')
+def test_small_remote_cover_downloads_once_and_removes_source(tmp_path, monkeypatch):
+    from aitags.covers import extract_cover
+    path=tmp_path/'tail-index.mp4'
+    run_process([config.FFMPEG,'-v','error','-f','lavfi','-i','testsrc=duration=2:size=160x120:rate=5',
+                 '-c:v','libx264','-pix_fmt','yuv420p',str(path)],30)
+    reads=[]
+    class Quiet(SimpleHTTPRequestHandler):
+        def log_message(self,*args):pass
+        def do_GET(self):
+            reads.append(self.headers.get('Range'))
+            super().do_GET()
+    server=ThreadingHTTPServer(('127.0.0.1',0),partial(Quiet,directory=str(tmp_path)))
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    origin=f'http://127.0.0.1:{server.server_port}'
+    from aitags import covers
+    decode=covers._decode_cover
+    temporary=[]
+    def track(source,*args):
+        from pathlib import Path
+        temporary.append(Path(source))
+        assert temporary[-1].is_file()
+        return decode(source,*args)
+    monkeypatch.setattr(covers,'_decode_cover',track)
+    try:
+        jpeg=extract_cover(origin+'/tail-index.mp4',origin,lambda:False,path.stat().st_size)
+        assert jpeg.startswith(b'\xff\xd8') and reads==[None]
+        assert len(temporary)==1 and not temporary[0].exists()
+        with pytest.raises(MediaError):
+            extract_cover(origin+'/tail-index.mp4',origin,lambda:False,path.stat().st_size-1)
+    finally:
+        server.shutdown();server.server_close();thread.join(timeout=2)
