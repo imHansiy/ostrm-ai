@@ -211,6 +211,13 @@ def test_small_remote_cover_downloads_once_and_removes_source(tmp_path, monkeypa
     path=tmp_path/'tail-index.mp4'
     run_process([config.FFMPEG,'-v','error','-f','lavfi','-i','testsrc=duration=2:size=160x120:rate=5',
                  '-c:v','libx264','-pix_fmt','yuv420p',str(path)],30)
+    # A valid free atom puts this file above the old 8 MiB cutoff. Slow remote
+    # metadata probes should still be replaced by exactly one bounded download.
+    import struct
+    padding=9*1024**2
+    with path.open('ab') as out:
+        out.write(struct.pack('>I4s',padding,b'free'))
+        out.write(b'\0'*(padding-8))
     reads=[]
     class Quiet(SimpleHTTPRequestHandler):
         def log_message(self,*args):pass

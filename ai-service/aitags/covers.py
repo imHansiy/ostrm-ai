@@ -12,6 +12,7 @@ from .media import FORMATS, MediaError, gateway, run_process, video_duration
 
 COVER_MAX_BYTES = 96 * 1024
 CACHE_MAX_BYTES = 64 * 1024**2
+SMALL_VIDEO_MAX_BYTES = 16 * 1024**2
 
 
 def cover_path(path, fingerprint):
@@ -24,7 +25,7 @@ def cover_path(path, fingerprint):
 
 
 def extract_cover(url, openlist_url, cancelled, size=0):
-    if 0 < size <= 8*1024**2:
+    if 0 < size <= SMALL_VIDEO_MAX_BYTES:
         return _small_cover(url, openlist_url, cancelled, size)
     try:
         return _extract_cover(url, openlist_url, cancelled, False)
@@ -41,9 +42,9 @@ def _extract_cover(url, openlist_url, cancelled, sequential):
     options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','7000000']
     if sequential:
         options += ['-seekable','0','-probesize','262144','-analyzeduration','500000']
-    with gateway(url,openlist_url,(8 if sequential else 16)*1024**2,
-                 20 if sequential else 25,cancelled) as (source,_):
-        seek = [] if sequential else ['-ss',str(min(8,video_duration(source,options,8,cancelled)*.15))]
+    with gateway(url,openlist_url,(16 if sequential else 32)*1024**2,
+                 40 if sequential else 60,cancelled,send_buffer_bytes=32*1024) as (source,_):
+        seek = [] if sequential else ['-ss',str(min(8,video_duration(source,options,20,cancelled)*.15))]
         return _decode_cover(source, options, seek, cancelled)
 
 
@@ -52,7 +53,7 @@ def _small_cover(url, openlist_url, cancelled, size):
     # cheaper and more reliable than several TLS connections for probe + seek.
     with TemporaryDirectory(prefix='aitags-cover-source-') as directory:
         source = Path(directory)/'video'
-        with gateway(url,openlist_url,size+1,30,cancelled) as (target,_):
+        with gateway(url,openlist_url,size+1,75,cancelled) as (target,_):
             try:
                 with httpx.stream('GET',target,timeout=20,trust_env=False) as response:
                     response.raise_for_status()
@@ -78,7 +79,7 @@ def _decode_cover(source, options, seek, cancelled):
         run_process([config.FFMPEG,'-v','error','-nostdin','-threads','1',*options,
                      *seek,'-i',source,'-map','0:V:0',
                      '-frames:v','1','-an','-vf','scale=480:480:force_original_aspect_ratio=decrease',
-                     '-threads','1','-q:v','7',str(output)],15,cancelled)
+                     '-threads','1','-q:v','7',str(output)],30,cancelled)
         if not output.is_file() or not 0 < output.stat().st_size <= COVER_MAX_BYTES:
             raise MediaError('封面抽取失败或图片过大')
         return output.read_bytes()

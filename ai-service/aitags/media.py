@@ -51,7 +51,7 @@ def approve_url(url, openlist_url):
 
 
 @contextmanager
-def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
+def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send_buffer_bytes=None):
     approve_url(url, openlist_url)
     nonce = '/' + uuid.uuid4().hex
     remaining = [budget]
@@ -84,6 +84,11 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False):
                 return
             response = None
             try:
+                if send_buffer_bytes is not None:
+                    # Cover probes frequently seek away after reading a header.
+                    # Limit abandoned read-ahead; full-video transfers keep defaults.
+                    self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, send_buffer_bytes)
+                    self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 if time.monotonic() >= deadline or cancelled():
                     raise MediaError('媒体读取已停止')
                 current = url
