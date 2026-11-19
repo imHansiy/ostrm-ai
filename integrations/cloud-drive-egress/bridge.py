@@ -1,5 +1,5 @@
 """Authenticated loopback CONNECT proxy; official API TLS stays end-to-end."""
-import base64,hmac,json,socket,socketserver,threading,select,time
+import base64,hmac,json,socket,socketserver,threading,select,time,re
 from pathlib import Path
 import websocket
 
@@ -36,7 +36,7 @@ class Proxy(socketserver.BaseRequestHandler):
         host,port=target.rsplit(':',1);host=host.strip('[]').lower();port=int(port)
         if method!='CONNECT' or port!=443 or not host or len(host)>253:
             client.sendall(b'HTTP/1.1 403 Forbidden\r\n\r\n');return
-        cloud=host in TARGETS
+        cloud=host in TARGETS or bool(re.fullmatch(r'dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn',host))
         upstream=None
         try:
             if cloud:

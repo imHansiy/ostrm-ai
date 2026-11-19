@@ -18,7 +18,7 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/health') return Response.json({ok: true, version: 1});
     const host = url.searchParams.get('host');
-    const media = host === 'dl1.aliyundrive.cloud' || host === 'dl-pc-zb.drive.quark.cn';
+    const media = /^(dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn)$/.test(host || '');
     const flow = url.searchParams.get('flow') === 'ack';
     if (!Object.hasOwn(targets, host) && !media) return new Response('Forbidden target', {status: 403});
     if (media && (url.pathname !== '/connect' || !flow)) return new Response('Flow control required', {status: 403});
@@ -61,7 +61,8 @@ export default {
     }
     const [client, server] = Object.values(new WebSocketPair());
     const writer = socket.writable.getWriter();
-    let stopped = false, incoming = 0, outgoing = 0, pending = 0, chain = Promise.resolve(), ack = null, unacked = 0;
+    let stopped = false, incoming = 0, outgoing = 0, pending = 0, chain = Promise.resolve(), ack = null, inflight = 0;
+    const unacked = [];
     const close = () => {
       if (stopped) return;
       stopped = true;
@@ -76,8 +77,8 @@ export default {
     server.addEventListener('close', close);
     server.addEventListener('error', close);
     server.addEventListener('message', event => {
-      if (flow && event.data === 'ack' && unacked > 0) {
-        unacked--;
+      if (flow && event.data === 'ack' && unacked.length > 0) {
+        inflight-=unacked.shift();
         if (ack) { const resolve=ack; ack=null; resolve(); }
         return;
       }
@@ -102,13 +103,17 @@ export default {
           for (let offset=0; offset<value.byteLength && !stopped; offset+=32768) {
             const chunk=value.subarray(offset,offset+32768);
             if (flow) {
-              while (unacked >= 32 && !stopped) await new Promise(resolve => { ack=resolve; });
+              while ((inflight >= 2*1024*1024 || unacked.length >= 1024) && !stopped) await new Promise(resolve => { ack=resolve; });
               if (stopped) break;
-              unacked++;
+              unacked.push(chunk.byteLength);
+              inflight+=chunk.byteLength;
               server.send(chunk);
             } else server.send(chunk);
           }
         }
+        // A short file may fit entirely in the credit window. Keep the
+        // WebSocket alive until its final bytes have reached the client.
+        while (flow && unacked.length > 0 && !stopped) await new Promise(resolve => { ack=resolve; });
       } catch {} finally { close(); }
     })());
     void socket.closed.catch(close);

@@ -30,6 +30,7 @@ EVIDENCE_CACHE_TTL = int(os.getenv("EVIDENCE_CACHE_TTL", "86400"))
 MEDIA_HOSTS = [x.strip().lower() for x in os.getenv("MEDIA_ALLOWED_HOSTS", "").split(",") if x.strip()]
 MEDIA_PROXY_URL = os.getenv('MEDIA_PROXY_URL', '')
 MEDIA_PROXY_HOSTS = [x.strip().lower() for x in os.getenv('MEDIA_PROXY_HOSTS', '').split(',') if x.strip()]
+MEDIA_DIRECT_DRIVERS = [x.strip() for x in os.getenv('MEDIA_DIRECT_DRIVERS', '').split(',') if x.strip()]
 DEFAULTS = {
     "model_url": MODEL_URL, "model_name": MODEL_NAME,
     "model_thinking": True, "video_num_frames": 32, "context_frames": 5,

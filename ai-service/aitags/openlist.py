@@ -89,6 +89,24 @@ class OpenList:
         options={'timeout':timeout} if timeout is not None else {}
         return self.call('POST', 'fs/list', token, {'path': clean_path(path), 'password': password, 'page': page, 'per_page': size, 'refresh': False},**options)
 
+    def get_media(self, path, timeout=None):
+        """Worker-only resolution. Driver cookies must never enter browser metadata."""
+        token = self.admin_token()
+        obj = self.get(path, token, timeout=timeout)
+        if obj.get('provider') not in config.MEDIA_DIRECT_DRIVERS:
+            return obj
+        link = self.call('POST', 'fs/link', token, {'path': clean_path(path)}, timeout=timeout)
+        if not link or not link.get('url'):
+            raise HTTPException(502, 'OpenList 未返回可读取的媒体地址')
+        headers = {}
+        for key, values in (link.get('header') or {}).items():
+            if key.lower() not in ('cookie','authorization','user-agent','referer'):
+                continue
+            value = values[0] if isinstance(values, list) and values else values
+            if isinstance(value, str) and len(value) <= 32768 and '\r' not in value and '\n' not in value:
+                headers[key] = value
+        return {**obj, 'raw_url': link['url'], '_media_headers': headers}
+
     def close(self):
         self.client.close()
 

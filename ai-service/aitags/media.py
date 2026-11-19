@@ -51,7 +51,7 @@ def approve_url(url, openlist_url):
 
 
 @contextmanager
-def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send_buffer_bytes=None):
+def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send_buffer_bytes=None, request_headers=None):
     approve_url(url, openlist_url)
     nonce = '/' + uuid.uuid4().hex
     remaining = [budget]
@@ -99,6 +99,8 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
                 for _ in range(6):
                     approve_url(current, openlist_url)
                     headers = media_headers(current)
+                    if urlsplit(current)[:2] == urlsplit(url)[:2]:
+                        headers.update(request_headers or {})
                     if self.headers.get('Range'):
                         headers['Range'] = self.headers['Range']
                     request = client.build_request('HEAD' if head else 'GET', current, headers=headers)
@@ -207,12 +209,12 @@ def run_process(args, timeout, cancelled=lambda: False):
             proc.wait()
 
 
-def sample_frames(url, openlist_url, settings, cancelled=lambda: False):
+def sample_frames(url, openlist_url, settings, cancelled=lambda: False, request_headers=None):
     started = time.monotonic()
     timeout = settings['media_timeout']
     def left():
         return max(.1, timeout - (time.monotonic() - started))
-    with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled) as (source, used):
+    with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled, request_headers=request_headers) as (source, used):
         probe = run_process([config.FFPROBE, '-v','error','-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,
                              '-rw_timeout','15000000','-probesize','5000000','-analyzeduration','5000000',
                              '-show_entries','format=duration','-of','json', source], left(), cancelled)
@@ -292,14 +294,14 @@ def detect_subtitle_crop(source, options, duration, root, remaining, cancelled):
     return max(scores,key=scores.get)
 
 
-def refresh_context_frames(sample, url, openlist_url, settings, cancelled=lambda:False):
+def refresh_context_frames(sample, url, openlist_url, settings, cancelled=lambda:False, request_headers=None):
     """Upgrade only still-image evidence; retain the full MP4 and all extracted captions."""
     from .subtitles import relation_points
     deadline = time.monotonic()+min(settings['media_timeout'],240)
     frames = []
     existing = {f['second']:f for f in sample.get('context_frames',[])}
     options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','15000000']
-    with gateway(url,openlist_url,min(settings['max_network_bytes'],64*1024**2),240,cancelled) as (source,used):
+    with gateway(url,openlist_url,min(settings['max_network_bytes'],64*1024**2),240,cancelled,request_headers=request_headers) as (source,used):
         with TemporaryDirectory(prefix='aitags-context-') as temp:
             for i,point in enumerate(relation_points(sample['subtitles'],sample['duration'],settings.get('context_frames',5))):
                 if point['second'] in existing:
@@ -317,7 +319,7 @@ def refresh_context_frames(sample, url, openlist_url, settings, cancelled=lambda
             'network_bytes':sample.get('network_bytes',0)+used[0]}
 
 
-def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitles=False):
+def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitles=False, request_headers=None):
     timeout = settings['media_timeout']
     deadline = time.monotonic() + timeout
     def remaining():
@@ -337,7 +339,7 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
         return sample
 
     http_options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','15000000']
-    with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled) as (source, used):
+    with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled, request_headers=request_headers) as (source, used):
         report(stage='probe')
         duration = video_duration(source, http_options, remaining(), cancelled)
         report(duration=duration)

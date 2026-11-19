@@ -328,7 +328,10 @@ class Worker:
             return run_cancelled
         try:
             self.event(task['path'],'processing','正在读取视频信息')
-            obj = self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT)
+            obj = (self.ol.get_media(task['path'], timeout=config.OPENLIST_SCAN_TIMEOUT)
+                   if config.MEDIA_DIRECT_DRIVERS else
+                   self.ol.get(task['path'],self.ol.admin_token(),timeout=config.OPENLIST_SCAN_TIMEOUT))
+            source_options = {'request_headers':obj['_media_headers']} if obj.get('_media_headers') else {}
             report(size=obj.get('size',0))
             if fingerprint(obj) != task['fingerprint']:
                 raise RuntimeError('视频已变化，请重新扫描后识别')
@@ -349,7 +352,7 @@ class Worker:
                 if (sample is not None and sample.get('subtitles') and task['content_type']=='movie'
                         and sample.get('context_revision',0)<3 and settings.get('context_frames',5)>0):
                     report(stage='context_frames')
-                    sample = refresh_context_frames(sample,obj['raw_url'],self.ol.url,settings,cancelled)
+                    sample = refresh_context_frames(sample,obj['raw_url'],self.ol.url,settings,cancelled,**source_options)
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:
@@ -358,14 +361,14 @@ class Worker:
                     report(stage='probe', deadline_at=time.time()+settings['media_timeout'])
                     self.event(task['path'],'processing','正在压缩完整视频与提取证据')
                     sample = compress_video(obj['raw_url'],self.ol.url,settings,cancelled,
-                                            subtitles=bool(task['use_subtitles']))
+                                            subtitles=bool(task['use_subtitles']),**source_options)
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:
                         self.event(task['path'],'warning','压缩证据缓存未能保存，本次继续识别')
             else:
                 report(stage='sampling', deadline_at=time.time()+settings['media_timeout'])
-                sample = sample_frames(obj['raw_url'],self.ol.url,settings,cancelled)
+                sample = sample_frames(obj['raw_url'],self.ol.url,settings,cancelled,**source_options)
             report(duration=sample.get('duration',0), compressed_bytes=sample.get('video_bytes',0))
             sample['content_type'] = task['content_type']
             if sample.get('subtitles'):
