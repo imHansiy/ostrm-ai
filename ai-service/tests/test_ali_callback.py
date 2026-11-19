@@ -46,7 +46,7 @@ def test_capacity_exhaustion_is_bounded_and_does_not_leak_url(monkeypatch):
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(media.MediaError) as error:
             media._open_media_response(client,'GET','https://dl1.aliyundrive.cloud/movie?token=private',{},time.monotonic()+5,lambda:False)
-    assert len(calls)==3 and all(response.is_closed for response in responses)
+    assert len(calls)==4 and all(response.is_closed for response in responses)
     assert 'private' not in str(error.value) and 'HTTP 403' not in str(error.value)
 
 
@@ -116,3 +116,8 @@ def test_seek_replaces_own_old_range_before_claiming_slot(monkeypatch):
             assert responses[0].is_closed
         finally:first.close()
     assert maximum==1 and active==0
+
+
+def test_only_callback_media_closes_idle_connections():
+    assert media.media_headers('https://dl1.aliyundrive.cloud/movie')['Connection']=='close'
+    assert 'Connection' not in media.media_headers('https://video.other.test/movie')

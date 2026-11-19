@@ -42,7 +42,7 @@ def _callback_wait(delay, deadline, cancelled):
 
 
 def _open_media_response(client, method, url, headers, deadline, cancelled):
-    for attempt in range(3):
+    for attempt in range(4):
         if cancelled() or time.monotonic() >= deadline:
             raise MediaError('媒体读取已停止或超时')
         response = client.send(client.build_request(method, url, headers=headers), stream=True)
@@ -62,7 +62,7 @@ def _open_media_response(client, method, url, headers, deadline, cancelled):
         if not temporary:
             return response
         response.close()
-        if attempt == 2:
+        if attempt == 3:
             raise MediaError('阿里云盘下载并发暂时受限，本次有限重试已用尽，请稍后恢复任务')
         _callback_wait(.5 * 2**attempt, deadline, cancelled)
 
@@ -70,6 +70,9 @@ def _open_media_response(client, method, url, headers, deadline, cancelled):
 def media_headers(url):
     host = (urlsplit(url).hostname or '').lower()
     headers = {'Accept-Encoding': 'identity'}
+    if _ali_callback(url):
+        # A finished range must not retain a callback connection in the pool.
+        headers['Connection'] = 'close'
     # Required by the official Baidu driver for large-file downloads.
     if host == 'baidupcs.com' or host.endswith('.baidupcs.com'):
         headers['User-Agent'] = 'pan.baidu.com'
