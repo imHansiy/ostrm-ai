@@ -40,6 +40,8 @@ HTTPS_PROXY=http://openlist:YOUR_PROXY_SECRET@[::1]:43647
 NO_PROXY=localhost,127.0.0.1,::1
 ```
 
+可将已经能直连的其他网盘域名加入 `NO_PROXY`，避免无关连接占用桥接并发。使用这组环境变量时，保持 OpenList 的 `proxy_address` 为空，以保留 `NO_PROXY` 的例外规则。
+
 若 AI 服务需要直读受阻的阿里 CDN，可仅为该来源设置：
 
 ```dotenv
