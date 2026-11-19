@@ -35,18 +35,28 @@ class OpenList:
         self.lock = threading.Lock()
         self.login_time = 0
 
-    def call(self, method, route, token='', body=None, timeout=None):
+    def call(self, method, route, token='', body=None, timeout=None, _admin_retry=False):
+        refreshable = (not _admin_retry and bool(config.OPENLIST_PASSWORD) and bool(token)
+                       and token == self.token and route in ('fs/get','fs/list','fs/link','me'))
+        def refresh_admin():
+            with self.lock:
+                self.login_time = 0
+            return self.call(method, route, self.admin_token(), body, timeout, _admin_retry=True)
         # Retry reads only. Interactive four-second catalog probes keep their deadline.
         retries = 2 if route in ('fs/get','fs/list','me') and (timeout is None or timeout > 5) else 0
         for attempt in range(retries + 1):
             try:
                 options={'timeout':timeout} if timeout is not None else {}
                 r = self.client.request(method, self.url + '/api/' + route, headers={'Authorization': token}, json=body,**options)
+                if r.status_code == 401 and refreshable:
+                    return refresh_admin()
                 r.raise_for_status()
                 d = r.json()
                 if d.get('code') == 200:
                     return d.get('data')
                 code = d.get('code', 502)
+                if code == 401 and refreshable:
+                    return refresh_admin()
                 reason = str(d.get('message','')).lower()
                 if any(word in reason for word in ('object not found','file not found','no such file','文件不存在')):
                     raise HTTPException(404, 'OpenList 文件不存在或已移动')
