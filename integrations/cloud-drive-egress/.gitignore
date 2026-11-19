@@ -1,0 +1,6 @@
+bridge.private.json
+.dev.vars*
+.env*
+.wrangler/
+node_modules/
+*.log

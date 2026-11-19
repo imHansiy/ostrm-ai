@@ -1,0 +1,5 @@
+{
+  "url": "wss://openlist-drive-egress.YOUR-SUBDOMAIN.workers.dev",
+  "secret": "REPLACE_WITH_RANDOM_SECRET_AT_LEAST_32_CHARACTERS",
+  "proxy_secret": "REPLACE_WITH_A_DIFFERENT_RANDOM_SECRET"
+}
