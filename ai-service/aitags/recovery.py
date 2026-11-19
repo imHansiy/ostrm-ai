@@ -80,8 +80,7 @@ class Recovery:
         # Existing active work (including newly discovered files) drains before the next batch.
         if self.db.one("SELECT t.id FROM tasks t JOIN runs r ON r.id=t.run_id WHERE t.state IN ('queued','running') AND r.state='running' LIMIT 1"):
             return False
-        if self.db.one("SELECT d.id FROM directories d JOIN runs r ON r.id=d.run_id WHERE d.state IN ('queued','running') AND r.state='running' LIMIT 1"):
-            return False
+        directory_busy = bool(self.db.one("SELECT d.id FROM directories d JOIN runs r ON r.id=d.run_id WHERE d.state IN ('queued','running') AND r.state='running' LIMIT 1"))
         with self.db.connect() as c:
             # Re-read under the same write lock used by worker queue claims and UI controls.
             row = c.execute('SELECT value FROM settings WHERE `key`=?', (KEY,)).fetchone()
@@ -90,7 +89,9 @@ class Recovery:
                 return False
             selected_tasks, selected_dirs, run_ids = [], [], set()
             for key, limit, selected in [('task', plan['batch_size'], selected_tasks),
-                                          ('directory', plan['directory_batch_size'], selected_dirs)]:
+                                          ('directory', 0 if directory_busy else plan['directory_batch_size'], selected_dirs)]:
+                if limit <= 0:
+                    continue
                 ids, cursor = plan[key+'_ids'], plan[key+'_cursor']
                 # At most 200 candidates per type per tick: a mostly-successful second
                 # pass must not hold the TiDB queue write lock for thousands of reads.
@@ -131,11 +132,13 @@ class Recovery:
             if run_ids:
                 slots = ','.join('?' for _ in run_ids)
                 c.execute(f"UPDATE runs SET state='running',error='' WHERE id IN ({slots})", list(run_ids))
-            plan['current_tasks'], plan['current_directories'] = selected_tasks, selected_dirs
+            plan['current_tasks'] = selected_tasks
+            if not directory_busy:
+                plan['current_directories'] = selected_dirs
             if selected_tasks or selected_dirs:
                 plan['batches'] += 1
                 plan['next_batch_at'] = time.time() + plan['interval']
-            else:
+            elif not directory_busy:
                 exhausted = plan['task_cursor'] >= len(plan['task_ids']) and (
                     not plan['directory_batch_size'] or plan['directory_cursor'] >= len(plan['directory_ids']))
                 if exhausted and plan['round'] < plan['max_rounds']:

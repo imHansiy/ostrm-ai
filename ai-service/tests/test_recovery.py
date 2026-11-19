@@ -115,6 +115,34 @@ def test_unavailable_mount_is_deferred_without_deleting_failures(env):
     assert db.one("SELECT state FROM tasks WHERE path='/offline-other/a.mp4'")['state']=='queued'
 
 
+def test_video_recovery_continues_while_directory_scan_is_busy(env):
+    db, ol, worker, _ = env
+    run=failed(env,['/public/a.mp4','/public/b.mp4','/public/c.mp4'])
+    db.execute("UPDATE videos SET status='done',result='{}' WHERE path='/public/c.mp4'")
+    untouched=db.one("SELECT * FROM videos WHERE path='/public/c.mp4'")
+    recovery=Recovery(db);recovery.start(1,1,rounds=1,interval=0)
+    directory=db.one('SELECT * FROM directories')
+    plan=recovery.status();plan['current_directories']=[directory['id']]
+    db.execute('UPDATE settings SET value=? WHERE `key`=?',(json.dumps(plan),KEY))
+    db.execute("UPDATE directories SET state='queued'")
+    db.execute("UPDATE runs SET state='running'")
+    assert Recovery(db).tick()
+    assert db.one("SELECT COUNT(*) AS n FROM tasks WHERE state='queued'")['n']==1
+    assert Recovery(db).status()['directory_cursor']==0
+    assert Recovery(db).status()['current_directories']==[directory['id']]
+    assert not Recovery(db).tick()  # Still only one active video batch.
+    db.execute("UPDATE tasks SET state='done' WHERE state='queued'")
+    db.execute("UPDATE videos SET status='done' WHERE status='pending'")
+    assert Recovery(db).tick()
+    db.execute("UPDATE tasks SET state='done' WHERE state='queued'")
+    db.execute("UPDATE videos SET status='done' WHERE status='pending'")
+    assert not Recovery(db).tick()
+    assert Recovery(db).status()['state']=='running'  # Never finish over live directories.
+    remaining=db.one('SELECT * FROM directories')
+    assert remaining['page']==directory['page'] and remaining['state']=='queued'
+    assert db.one("SELECT * FROM videos WHERE path='/public/c.mp4'")==untouched
+
+
 def test_openlist_read_retries_and_short_probe_does_not_retry(monkeypatch):
     monkeypatch.setattr('aitags.openlist.time.sleep', lambda _: None)
     client = OpenList('https://openlist.test')
