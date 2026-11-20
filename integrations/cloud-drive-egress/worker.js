@@ -1,5 +1,6 @@
 import { connect } from 'cloudflare:sockets';
 import { timingSafeEqual } from 'node:crypto';
+import { fetchMedia, isMediaHost } from './media-fetch.js';
 
 const targets = Object.freeze({
   'openapi.alipan.com': '/adrive/v1.0/user/getDriveInfo',
@@ -17,9 +18,10 @@ export default {
   async fetch(request, env, ctx) {
     if (!authorized(request, env.RELAY_SECRET)) return new Response('Unauthorized', {status: 401});
     const url = new URL(request.url);
-    if (url.pathname === '/health') return Response.json({ok: true, version: 2});
+    if (url.pathname === '/health') return Response.json({ok: true, version: 3});
+    if (url.pathname === '/media-fetch') return fetchMedia(request);
     const host = url.searchParams.get('host');
-    const media = /^(dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn)$/.test(host || '');
+    const media = isMediaHost(host);
     const model = host === 'api.modelbest.cn';
     const flow = url.searchParams.get('flow') === 'ack';
     const uploadFlow = url.searchParams.get('upload') === 'ack';

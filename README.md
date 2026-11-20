@@ -120,6 +120,7 @@ AI_AUTO_ENQUEUE=false
 | `MEDIA_PUBLIC_BASE_URL` | 客户端可访问的 OStrm AI 公共服务地址，例如 `https://media.example.com`，不是 OpenList 文件路径或 `/ai` 管理页 |
 | `MEDIA_ALLOWED_HOSTS` | 实际网盘/CDN 的主机白名单；OpenList 自身源自动允许，其他重定向目标也需符合限制 |
 | `MEDIA_PROXY_URL` / `MEDIA_PROXY_HOSTS` | 可选媒体代理及逗号分隔的匹配主机，例如 `dl1.aliyundrive.cloud`。仅匹配来源使用代理，模型与其他来源保持原连接方式；主机白名单、流量预算、超时和 TLS 验证继续生效。代理凭据只放服务端环境变量 |
+| `MEDIA_FETCH_RELAY_URL` / `MEDIA_FETCH_RELAY_TOKEN` / `MEDIA_FETCH_RELAY_HOSTS` | 可选的私有 Worker HTTP 范围读取，默认关闭。先读取小段元数据，再按强 ETag、文件总长和连续偏移校验每段，通过一个逻辑流交给 FFmpeg；中断可从已验证的字节位置续读。源链接和必要驱动请求头在你自己的 Worker 内处理，不记录日志、不缓存、不发送到浏览器；详见 [云端出口说明](integrations/cloud-drive-egress/README.md) |
 | `MEDIA_DIRECT_DRIVERS` | 可选，例如 `Quark,UC`。仅识别工作进程通过 OpenList 管理员接口取得真实下载地址与驱动请求头，适用于 OpenList 视频代理不可用的情况。需将真实 CDN 加入媒体白名单；敏感请求头不写入识别结果，也不跨来源重定向转发 |
 | `VIDEO_PROBE_TIMEOUT` | 元数据探测时限，默认 90 秒；独立于整片压缩与识别的 `media_timeout`，防止读取时长阶段长时间占住队列 |
 | `MEDIA_SMALL_CACHE_BYTES` | 阿里回调下载的小文件临时缓存上限，默认 33554432（32 MiB），设为 0 关闭。已知大小且在流量预算内的视频，通过 256 KiB 的一致性校验 Range 请求下载完整原文件，再从临时文件探测、压缩；任务结束自动删除。传输分段不改变模型输入，模型仍收到一份完整压缩视频；大文件继续流式读取 |

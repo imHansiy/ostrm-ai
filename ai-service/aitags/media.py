@@ -18,6 +18,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from . import config
 from .activity import report, reporter, read_ffmpeg_progress
+from .media_relay import MediaRelayTransport
 
 
 class MediaError(RuntimeError):
@@ -30,6 +31,12 @@ _ALI_CALLBACK_SLOT = threading.BoundedSemaphore(1)
 
 def _ali_callback(url):
     return fnmatch.fnmatchcase((urlsplit(url).hostname or '').lower(), 'dl*.aliyundrive.cloud')
+
+
+def use_fetch_relay(url):
+    host=(urlsplit(url).hostname or '').lower()
+    return bool(config.MEDIA_FETCH_RELAY_URL and config.MEDIA_FETCH_RELAY_TOKEN and
+                any(fnmatch.fnmatchcase(host,pattern) for pattern in config.MEDIA_FETCH_RELAY_HOSTS))
 
 
 def _callback_wait(delay, deadline, cancelled):
@@ -157,7 +164,10 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
     deadline = time.monotonic() + timeout
     proxy_options = {}
     host = (urlsplit(url).hostname or '').lower()
-    if config.MEDIA_PROXY_URL and any(fnmatch.fnmatchcase(host, pattern) for pattern in config.MEDIA_PROXY_HOSTS):
+    if use_fetch_relay(url):
+        proxy_options['transport']=MediaRelayTransport(config.MEDIA_FETCH_RELAY_URL,config.MEDIA_FETCH_RELAY_TOKEN,
+                                                       config.MEDIA_FETCH_RELAY_HOSTS,deadline)
+    elif config.MEDIA_PROXY_URL and any(fnmatch.fnmatchcase(host, pattern) for pattern in config.MEDIA_PROXY_HOSTS):
         proxy_options['proxy'] = config.MEDIA_PROXY_URL
     client = httpx.Client(timeout=15, follow_redirects=False, **proxy_options)
     callback = reporter()
@@ -479,7 +489,7 @@ def prepared_video_source(url, openlist_url, settings, timeout, cancelled, reque
                     validator = None
                     with cached.open('wb') as output:
                         while size < source_size:
-                            end = min(source_size,size+256*1024)-1
+                            end = source_size-1 if use_fetch_relay(url) else min(source_size,size+256*1024)-1
                             headers = {'Range':f'bytes={size}-{end}'}
                             if validator:
                                 headers['If-Range'] = validator

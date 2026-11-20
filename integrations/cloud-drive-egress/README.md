@@ -55,6 +55,22 @@ MEDIA_PROXY_HOSTS=dl1.aliyundrive.cloud
 
 ## 传输限制与排错
 
+### 可选：HTTP 范围读取
+
+原 WSS 通道正常但大文件传输过慢或频繁断开时，可先独立验证 `/media-fetch`，再只为指定 CDN 启用：
+
+```dotenv
+MEDIA_FETCH_RELAY_URL=https://YOUR_WORKER.workers.dev/media-fetch
+MEDIA_FETCH_RELAY_TOKEN=YOUR_RELAY_SECRET
+MEDIA_FETCH_RELAY_HOSTS=dl*.aliyundrive.cloud,dl-pc-*.drive.quark.cn
+```
+
+此模式由你自己的 Worker 通过 HTTPS 读取媒体，再流式回传。**签名链接及必要的 Cookie 等请求头会在该 Worker 中处理**，与原 WSS 端到端 TLS 透传不同；仅在信任并控制该 Worker 时使用。接口沿用 `RELAY_SECRET` 鉴权，只有列出的 CDN 可访问，拒绝重定向、未知请求头和超过 8 MiB 的单次范围，不写日志、不缓存私有响应。
+
+AI 端先读取最多 256 KiB，再连续读取最多 4 MiB 的区段，只有强 ETag、总长度、起止偏移一致才拼接；输入变化立即失败。源站返回合法的较短区段时继续读取下一段，不把它误判为文件变化。网络中断最多有限重试，并继续遵守原有单片总流量与时间预算。关闭这三个变量即可回退。该功能只改变下载传输，模型仍收到一份完整压缩视频，模型端点、规格及提示词不变。
+
+验证：`node --test media-fetch.test.js` 和 `npm run check`，再对真实文件比较内容摘要校验值、传输时间及整片识别结果；不要只依据 HTTP 200 判断成功。
+
 国内模型服务需要中转时，在 AI 服务环境中单独配置：
 
 ```dotenv
