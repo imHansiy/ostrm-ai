@@ -3,6 +3,20 @@ export function isMediaHost(host) {
   return /^(dl[0-9]+\.aliyundrive\.cloud|dl-pc-[a-z0-9-]+\.drive\.quark\.cn|dl-pc-[a-z0-9-]+\.pds\.uc\.cn)$/.test(host || '');
 }
 const error = (status, message) => new Response(message, {status, headers: {'Cache-Control':'private, no-store'}});
+function rejectionKind(text) {
+  // Only fixed categories cross the private relay; never reflect signed URLs,
+  // request IDs, credentials, or provider messages.
+  if (/RequestDeniedByCallback/.test(text) && /ExceedMaxConcurrency/.test(text)) return 'concurrency';
+  if (/RequestExpired|ExpiredToken|RequestHasExpired|request (?:has )?expired/i.test(text)) return 'expired';
+  if (/RequestTimeTooSkewed/i.test(text)) return 'clock';
+  if (/SignatureDoesNotMatch|InvalidSignature/i.test(text)) return 'signature';
+  if (/referer/i.test(text)) return 'referer';
+  if (/InvalidAccessKeyId|SecurityTokenExpired|InvalidSecurityToken/i.test(text)) return 'credential';
+  if (/RequestDeniedByCallback/i.test(text)) return 'callback';
+  if (/AccessDenied/i.test(text)) return 'access';
+  if (/<!doctype|<html/i.test(text)) return 'html-denial';
+  return 'denied';
+}
 async function boundedBytes(body) {
   if (!body) throw new Error('missing body');
   const reader=body.getReader(), chunks=[];
@@ -44,8 +58,11 @@ export async function fetchMedia(request, transport=fetch) {
     if (upstream.status===403) {
       try {
         const text=new TextDecoder().decode(await boundedBytes(upstream.body));
-        if (text.includes('RequestDeniedByCallback')&&text.includes('ExceedMaxConcurrency')) return error(403,'RequestDeniedByCallback ExceedMaxConcurrency');
-      } catch {} // Only a fixed temporary-capacity marker may cross this boundary.
+        const kind=rejectionKind(text);
+        const response=error(403,kind==='concurrency'?'RequestDeniedByCallback ExceedMaxConcurrency':'Media upstream rejected range: '+kind);
+        response.headers.set('X-Media-Error-Kind',kind);
+        return response;
+      } catch {} // Oversized/invalid errors stay generic and bounded.
     } else await upstream.body?.cancel();
     return error(upstream.status>=400&&upstream.status<=599?upstream.status:502,'Media upstream did not accept range');
   }

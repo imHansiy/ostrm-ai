@@ -28,6 +28,20 @@ test('only sanitized capacity rejection is retained from upstream errors',async(
   const response=await fetchMedia(input(),async()=>new Response('private-token RequestDeniedByCallback ExceedMaxConcurrency',{status:403}));
   assert.equal(response.status,403);assert.equal(await response.text(),'RequestDeniedByCallback ExceedMaxConcurrency');
 });
+test('denial diagnostics expose only fixed categories, not upstream details',async()=>{
+  for (const [body,kind] of [
+    ['<Code>SignatureDoesNotMatch</Code> private-token https://signed.test/?secret=x','signature'],
+    ['<Code>AccessDenied</Code> private-token','access'],
+    ['RequestDeniedByCallback private-token','callback'],
+    ['<html>private-token</html>','html-denial'],
+    ['<Code>RequestExpired</Code> private-token','expired'],
+    ['private-token','denied'],
+  ]) {
+    const response=await fetchMedia(input(),async()=>new Response(body,{status:403}));
+    assert.equal(response.status,403);assert.equal(response.headers.get('X-Media-Error-Kind'),kind);
+    assert.equal(await response.text(),'Media upstream rejected range: '+kind);
+  }
+});
 test('bounded request parsing rejects excessive JSON',async()=>{
   const request=new Request('https://relay.test/media-fetch',{method:'POST',body:'x'.repeat(65537)});
   assert.equal((await fetchMedia(request,()=>assert.fail('must not fetch'))).status,400);

@@ -99,3 +99,5 @@ AI 服务在私有 HTTP 媒体通道遇到 403 时，可以通过原 OpenList �
 此处理在 AI 服务端完成，无需修改 OpenList 本体或重新部署 Worker，也不改变整片压缩参数、模型和提示词。MP4/MOV 时长优先通过有限的 Range 请求读取容器时钟和视频轨道头，跳过媒体包和大型样本索引；容器头读取最多 256 KiB、256 个 atom，并检查范围、文件总长和强 ETag。不能取得有效视频时长时，在原有总超时内回退到 FFprobe。此步骤只获取时长，模型输入仍为完整视频压缩后的内容。
 
 对于需要频繁跳转的较小文件，可以通过 `MEDIA_SMALL_CACHE_BYTES` 设置有上限的临时源文件缓存，完成后自动删除。
+
+`/media-fetch` 的上游 403 响应会通过 `X-Media-Error-Kind` 返回固定分类：`expired`、`clock`、`signature`、`referer`、`credential`、`callback`、`access`、`concurrency`、`html-denial` 或 `denied`。这有助于区分直链过期、签名/权限校验和 CDN 拒绝；仅容量限制保留固定的重试标记，原始错误正文、签名链接和凭据不会回传。分类是排查依据，不表示该失败一定可以重试恢复。需要升级 Worker 才能取得这些分类。
