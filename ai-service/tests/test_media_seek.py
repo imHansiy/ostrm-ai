@@ -4,6 +4,37 @@ import pytest
 from aitags import media
 
 
+@pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'),reason='requires real FFmpeg tools')
+def test_whole_video_compression_seeks_verified_relay_tail_metadata(tmp_path,monkeypatch):
+    import httpx,json
+    from aitags.media_relay import MediaRelayTransport
+    from aitags.config import DEFAULTS
+    path=tmp_path/'tail-video.mp4'
+    media.run_process(['ffmpeg','-v','error','-f','lavfi','-i','testsrc2=duration=12:size=960x540:rate=15',
+                       '-c:v','libx264','-preset','ultrafast','-crf','18','-pix_fmt','yuv420p',str(path)],30)
+    data=path.read_bytes();assert len(data)>1024**2
+    calls=[]
+    def upstream(request):
+        body=json.loads(request.content)
+        start,end=map(int,body['headers']['range'][6:].split('-'));end=min(end,len(data)-1)
+        calls.append(start)
+        return httpx.Response(206,headers={'Content-Range':f'bytes {start}-{end}/{len(data)}',
+                              'ETag':'"unchanged-film"'},stream=httpx.ByteStream(data[start:end+1]))
+    monkeypatch.setattr(media.config,'MEDIA_FETCH_RELAY_URL','https://relay.test/media-fetch')
+    monkeypatch.setattr(media.config,'MEDIA_FETCH_RELAY_TOKEN','private-test-token')
+    monkeypatch.setattr(media.config,'MEDIA_FETCH_RELAY_HOSTS',['dl*.aliyundrive.cloud'])
+    monkeypatch.setattr(media.config,'MEDIA_SMALL_CACHE_BYTES',0)
+    monkeypatch.setattr(media,'approve_url',lambda *args:None)
+    monkeypatch.setattr(media,'MediaRelayTransport',lambda *args,**kwargs:MediaRelayTransport(
+        *args,**kwargs,transport=httpx.MockTransport(upstream)))
+    sample=media.compress_video('https://dl1.aliyundrive.cloud/tail.mp4','http://openlist.test',
+                                {**DEFAULTS,'media_timeout':30},source_size=len(data))
+    assert sample['duration']==pytest.approx(12,abs=.1)
+    assert 0<sample['video_bytes']<=23*1024**2
+    assert any(start>len(data)//2 for start in calls)
+    assert sample['network_bytes']<2*len(data)
+
+
 @pytest.mark.parametrize('first',[{'streams':[{}],'format':{}},media.MediaError('unsupported fast probe')])
 def test_duration_probe_falls_back_without_extending_total_deadline(monkeypatch,first):
     import json

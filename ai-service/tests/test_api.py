@@ -73,6 +73,16 @@ def test_settings_validation_and_no_secrets(env):
     settings['roots']=['/public'];settings['model_url']='http://user:secret@host/v1'
     assert c.put('/ai/api/settings',headers=ADMIN,json=settings).status_code==400
 
+def test_long_media_timeout_roundtrips_and_remains_bounded(env):
+    db,ol,w,c=env
+    settings=c.get('/ai/api/settings',headers=ADMIN).json()['settings']
+    settings['media_timeout']=43200
+    assert c.put('/ai/api/settings',headers=ADMIN,json=settings).status_code==200
+    assert c.get('/ai/api/settings',headers=ADMIN).json()['settings']['media_timeout']==43200
+    settings['media_timeout']=43201
+    assert c.put('/ai/api/settings',headers=ADMIN,json=settings).status_code==422
+    assert db.settings()['media_timeout']==43200
+
 def test_backup_is_valid_sqlite(env,tmp_path):
     db,ol,w,c=env
     add_video(db,w,'/public/a.mp4',ol)

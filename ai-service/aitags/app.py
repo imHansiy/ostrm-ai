@@ -40,7 +40,7 @@ class Settings(BaseModel):
     frames: int = Field(ge=2,le=48)
     max_video_bytes: int = Field(ge=1024,le=1099511627776)
     max_network_bytes: int = Field(ge=1048576,le=16 * 1024**3)
-    media_timeout: int = Field(ge=10,le=7200)
+    media_timeout: int = Field(ge=10,le=43200)
     model_timeout: int = Field(ge=10,le=1800)
     page_size: int = Field(ge=1,le=500)
     max_depth: int = Field(ge=1,le=128)

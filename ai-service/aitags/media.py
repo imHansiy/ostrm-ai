@@ -569,6 +569,10 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
     with prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size,refresh_source) as (source, used, local):
         if local:
             http_options = []
+        elif use_fetch_relay(url):
+            # This transport has already validated finite byte ranges. Explicit
+            # seeking lets FFmpeg reach a trailing moov without streaming mdat.
+            http_options += ['-seekable','1']
         report(stage='probe')
         duration = video_duration(source, http_options, remaining(), cancelled)
         report(duration=duration)
