@@ -401,6 +401,14 @@ NATIVE_VIDEO_MAX_BYTES = 23 * 1024**2
 def video_duration(source, options, timeout, cancelled):
     deadline=time.monotonic()+min(timeout,config.VIDEO_PROBE_TIMEOUT)
     error=MediaError('无法确定有效视频时长')
+    from .container_probe import mp4_duration,ContainerChanged
+    try:
+        duration=mp4_duration(source,min(15,max(.1,(deadline-time.monotonic())/3)),cancelled)
+        if duration:return duration
+    except ContainerChanged:
+        raise MediaError('媒体文件已变化，停止读取时长') from None
+    except httpx.HTTPError:
+        pass
     # Container metadata often already supplies duration. Avoid downloading
     # seconds of codec packets over a slow cloud mount merely to read it.
     for fast in (True,False):
