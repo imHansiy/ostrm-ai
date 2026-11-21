@@ -4,6 +4,22 @@ import pytest
 from aitags import media
 
 
+@pytest.mark.parametrize('first',[{'streams':[{}],'format':{}},media.MediaError('unsupported fast probe')])
+def test_duration_probe_falls_back_without_extending_total_deadline(monkeypatch,first):
+    import json
+    calls=[]
+    def run(args,timeout,cancelled):
+        calls.append((args,timeout))
+        if len(calls)==1:
+            if isinstance(first,Exception):raise first
+            return json.dumps(first).encode()
+        return b'{"streams":[{"duration":"12.5"}]}'
+    monkeypatch.setattr(media,'run_process',run)
+    assert media.video_duration('local.mp4',[],60,lambda:False)==12.5
+    assert '-nofind_stream_info' in calls[0][0] and '-nofind_stream_info' not in calls[1][0]
+    assert calls[0][1]<=30 and calls[1][1]<=60
+
+
 @pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'),reason='requires real FFmpeg tools')
 def test_tail_metadata_probe_seeks_without_reading_whole_video(tmp_path,monkeypatch):
     # Exercise provider admission with a real slow, ranged HTTP source.

@@ -117,4 +117,86 @@ def test_midstream_relay_failure_closes_rejected_response():
         responses.append(response);return response
     with relay_client(respond) as client:
         with pytest.raises(httpx.ReadError):client.get('https://dl1.aliyundrive.cloud/video')
-    assert len(responses)==2 and all(response.is_closed for response in responses)
+    assert len(responses)==3 and all(response.is_closed for response in responses)
+
+
+def test_transient_upstream_failure_is_retried_once_at_the_same_offset():
+    calls=[]
+    def respond(request):
+        p=json.loads(request.content);calls.append(p['headers']['range'])
+        if len(calls)==1:return httpx.Response(502,stream=httpx.ByteStream(b'upstream connection failed'))
+        return httpx.Response(206,headers={'Content-Range':'bytes 0-3/4','ETag':'"film"'},stream=httpx.ByteStream(b'film'))
+    with relay_client(respond) as client:assert client.get('https://dl1.aliyundrive.cloud/video').content==b'film'
+    assert calls==['bytes=0-262143','bytes=0-262143']
+
+
+@pytest.mark.parametrize('changed_entity',[False,True])
+def test_expired_signed_url_renews_at_exact_offset_and_checks_identity(changed_entity):
+    data=bytes(range(256))*2048;calls=[];renewals=[]
+    def refresh():renewals.append(1);return 'https://dl1.aliyundrive.cloud/video?sig=new',{}
+    def respond(request):
+        payload=json.loads(request.content);calls.append(payload)
+        start,end=map(int,payload['headers']['range'][6:].split('-'));end=min(end,len(data)-1)
+        if start>0 and 'sig=new' not in payload['url']:
+            return httpx.Response(403,stream=httpx.ByteStream(b'expired signed request'))
+        etag='"changed"' if changed_entity and 'sig=new' in payload['url'] else '"stable"'
+        return httpx.Response(206,headers={'Content-Range':f'bytes {start}-{end}/{len(data)}','ETag':etag},stream=httpx.ByteStream(data[start:end+1]))
+    with relay_client(respond,refresh_source=refresh) as client:
+        if changed_entity:
+            with pytest.raises(httpx.ReadError,match='entity changed'):
+                client.get('https://dl1.aliyundrive.cloud/video?sig=old',headers={'Cookie':'old-private-cookie'})
+        else:
+            response=client.get('https://dl1.aliyundrive.cloud/video?sig=old',headers={'Cookie':'old-private-cookie'})
+            assert response.content==data
+    assert renewals==[1]
+    assert [p['headers']['range'] for p in calls]==['bytes=0-262143','bytes=262144-524287','bytes=262144-524287']
+    assert 'cookie' not in calls[-1]['headers']
+
+
+@pytest.mark.parametrize('target',['https://attacker.test/video','http://dl1.aliyundrive.cloud/video','https://user:pass@dl1.aliyundrive.cloud/video'])
+def test_refresh_rejects_targets_outside_original_media_policy(target):
+    calls=[]
+    def respond(request):calls.append(1);return httpx.Response(403,stream=httpx.ByteStream(b'expired'))
+    with relay_client(respond,refresh_source=lambda:(target,{})) as client:
+        with pytest.raises(httpx.ReadError,match='not approved'):client.get('https://dl1.aliyundrive.cloud/video')
+    assert len(calls)==1
+
+
+def test_unchanged_denied_source_is_not_retried_forever():
+    calls=[]
+    def respond(request):calls.append(1);return httpx.Response(403,stream=httpx.ByteStream(b'permission denied'))
+    with relay_client(respond,refresh_source=lambda:('https://dl1.aliyundrive.cloud/video',{})) as client:
+        response=client.get('https://dl1.aliyundrive.cloud/video')
+        assert response.status_code==403
+    assert len(calls)==1
+
+
+def test_refresh_can_remove_expired_cookie_without_changing_url():
+    calls=[]
+    def respond(request):
+        p=json.loads(request.content);calls.append(p)
+        if 'cookie' in p['headers']:return httpx.Response(403,stream=httpx.ByteStream(b'expired cookie'))
+        return httpx.Response(206,headers={'Content-Range':'bytes 0-3/4','ETag':'"stable"'},stream=httpx.ByteStream(b'film'))
+    with relay_client(respond,refresh_source=lambda:('https://dl1.aliyundrive.cloud/video',{})) as client:
+        assert client.get('https://dl1.aliyundrive.cloud/video',headers={'Cookie':'expired-private-cookie'}).content==b'film'
+    assert len(calls)==2 and 'cookie' not in calls[-1]['headers']
+
+
+def test_local_source_cache_survives_expired_link_without_duplicate_bytes(monkeypatch):
+    from aitags import media
+    from pathlib import Path
+    data=b'film'*262144;renewals=[]
+    def refresh():renewals.append(1);return 'https://dl1.aliyundrive.cloud/video?sig=new',{}
+    def respond(request):
+        p=json.loads(request.content);start,end=map(int,p['headers']['range'][6:].split('-'));end=min(end,len(data)-1)
+        if start and 'sig=new' not in p['url']:return httpx.Response(403,stream=httpx.ByteStream(b'expired'))
+        return httpx.Response(206,headers={'Content-Range':f'bytes {start}-{end}/{len(data)}','ETag':'"film"'},stream=httpx.ByteStream(data[start:end+1]))
+    monkeypatch.setattr(media.config,'MEDIA_FETCH_RELAY_URL','https://relay.test/media-fetch')
+    monkeypatch.setattr(media.config,'MEDIA_FETCH_RELAY_TOKEN','private-owner-token')
+    monkeypatch.setattr(media.config,'MEDIA_FETCH_RELAY_HOSTS',['dl*.aliyundrive.cloud'])
+    monkeypatch.setattr(media,'approve_url',lambda *args:None)
+    monkeypatch.setattr(media,'MediaRelayTransport',lambda *args,**kwargs:MediaRelayTransport(*args,**kwargs,transport=httpx.MockTransport(respond)))
+    with media.prepared_video_source('https://dl1.aliyundrive.cloud/video?sig=old','http://openlist.test',{'max_network_bytes':len(data)},10,lambda:False,None,len(data),refresh) as (source,used,local):
+        assert local and Path(source).read_bytes()==data
+        assert used[0]==len(data)
+    assert renewals==[1]

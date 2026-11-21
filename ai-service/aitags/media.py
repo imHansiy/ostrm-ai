@@ -154,7 +154,7 @@ def approve_url(url, openlist_url):
 
 
 @contextmanager
-def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send_buffer_bytes=None, request_headers=None):
+def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send_buffer_bytes=None, request_headers=None, refresh_source=None):
     approve_url(url, openlist_url)
     nonce = '/' + uuid.uuid4().hex
     remaining = [budget]
@@ -165,8 +165,14 @@ def gateway(url, openlist_url, budget, timeout, cancelled=lambda: False, *, send
     proxy_options = {}
     host = (urlsplit(url).hostname or '').lower()
     if use_fetch_relay(url):
+        def checked_refresh():
+            target,headers=refresh_source()
+            approve_url(target,openlist_url)
+            if not use_fetch_relay(target):raise MediaError('刷新地址不属于已配置的媒体通道')
+            return target,headers
+        renewal={'refresh_source':checked_refresh} if refresh_source else {}
         proxy_options['transport']=MediaRelayTransport(config.MEDIA_FETCH_RELAY_URL,config.MEDIA_FETCH_RELAY_TOKEN,
-                                                       config.MEDIA_FETCH_RELAY_HOSTS,deadline)
+                                                       config.MEDIA_FETCH_RELAY_HOSTS,deadline,**renewal)
     elif config.MEDIA_PROXY_URL and any(fnmatch.fnmatchcase(host, pattern) for pattern in config.MEDIA_PROXY_HOSTS):
         proxy_options['proxy'] = config.MEDIA_PROXY_URL
     client = httpx.Client(timeout=15, follow_redirects=False, **proxy_options)
@@ -393,21 +399,29 @@ NATIVE_VIDEO_MAX_BYTES = 23 * 1024**2
 
 
 def video_duration(source, options, timeout, cancelled):
-    probe = run_process([config.FFPROBE, '-v','error',*options,'-select_streams','V:0',
-                         '-probesize','5000000','-analyzeduration','5000000',
-                         '-show_entries','stream=duration:format=duration','-of','json',source],
-                        min(timeout, config.VIDEO_PROBE_TIMEOUT), cancelled)
-    data = json.loads(probe)
-    streams = data.get('streams', [])
-    if not streams:
-        raise MediaError('找不到可识别的视频轨道')
-    for value in (streams[0].get('duration'), data.get('format', {}).get('duration')):
-        if value in (None, 'N/A'):
-            continue
-        duration = float(value)
-        if math.isfinite(duration) and duration > 0:
-            return duration
-    raise MediaError('无法确定有效视频时长')
+    deadline=time.monotonic()+min(timeout,config.VIDEO_PROBE_TIMEOUT)
+    error=MediaError('无法确定有效视频时长')
+    # Container metadata often already supplies duration. Avoid downloading
+    # seconds of codec packets over a slow cloud mount merely to read it.
+    for fast in (True,False):
+        remaining=deadline-time.monotonic()
+        if remaining<=0 or cancelled():raise MediaError('媒体解码超时或任务取消')
+        flags=['-nofind_stream_info'] if fast else []
+        try:
+            probe=run_process([config.FFPROBE,'-v','error',*options,*flags,'-select_streams','V:0',
+                               '-probesize','5000000','-analyzeduration','5000000',
+                               '-show_entries','stream=duration:format=duration','-of','json',source],
+                              min(30,remaining/2) if fast else remaining,cancelled)
+            data=json.loads(probe);streams=data.get('streams',[])
+            if not streams:
+                error=MediaError('找不到可识别的视频轨道');continue
+            for value in (streams[0].get('duration'),data.get('format',{}).get('duration')):
+                if value in (None,'N/A'):continue
+                duration=float(value)
+                if math.isfinite(duration) and duration>0:return duration
+        except (MediaError,ValueError,TypeError) as exc:
+            error=exc if isinstance(exc,MediaError) else MediaError('无法确定有效视频时长')
+    raise error
 
 
 def detect_subtitle_crop(source, options, duration, root, remaining, cancelled):
@@ -471,11 +485,11 @@ def refresh_context_frames(sample, url, openlist_url, settings, cancelled=lambda
 
 
 @contextmanager
-def prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size):
+def prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size, refresh_source=None):
     """Cache small callback-limited files once; preserve streaming for large inputs."""
     limit = min(config.MEDIA_SMALL_CACHE_BYTES, settings['max_network_bytes'])
     with gateway(url, openlist_url, settings['max_network_bytes'], timeout, cancelled,
-                 request_headers=request_headers) as (source, used):
+                 request_headers=request_headers,refresh_source=refresh_source) as (source, used):
         if not (_ali_callback(url) and 0 < source_size <= limit):
             yield source, used, False
             return
@@ -524,7 +538,7 @@ def prepared_video_source(url, openlist_url, settings, timeout, cancelled, reque
             yield str(cached), used, True
 
 
-def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitles=False, request_headers=None, source_size=0):
+def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitles=False, request_headers=None, source_size=0, refresh_source=None):
     timeout = settings['media_timeout']
     deadline = time.monotonic() + timeout
     def remaining():
@@ -544,7 +558,7 @@ def compress_video(url, openlist_url, settings, cancelled=lambda: False, subtitl
         return sample
 
     http_options = ['-protocol_whitelist','http,tcp','-format_whitelist',FORMATS,'-rw_timeout','45000000']
-    with prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size) as (source, used, local):
+    with prepared_video_source(url, openlist_url, settings, timeout, cancelled, request_headers, source_size,refresh_source) as (source, used, local):
         if local:
             http_options = []
         report(stage='probe')

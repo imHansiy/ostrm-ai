@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import HTTPException
 from . import config
 from .openlist import clean_path
-from .media import compress_video, sample_frames, refresh_context_frames
+from .media import compress_video, sample_frames, refresh_context_frames, use_fetch_relay
 from .model import infer, ModelRoutingError
 from .subtitles import save_subtitles
 from .evidence_cache import EvidenceCache
@@ -377,8 +377,15 @@ class Worker:
                 if sample is None:
                     report(stage='probe', deadline_at=time.time()+settings['media_timeout'])
                     self.event(task['path'],'processing','正在压缩完整视频与提取证据')
+                    def renew_source():
+                        if cancelled():raise RuntimeError('任务已取消')
+                        fresh=self.ol.get_media(task['path'],timeout=min(10,config.OPENLIST_SCAN_TIMEOUT))
+                        if fresh.get('is_dir') or fingerprint(fresh)!=task['fingerprint']:
+                            raise RuntimeError('视频已变化，停止刷新直链')
+                        return fresh['raw_url'],fresh.get('_media_headers',{})
+                    renewal={'refresh_source':renew_source} if use_fetch_relay(obj['raw_url']) else {}
                     sample = compress_video(obj['raw_url'],self.ol.url,settings,cancelled,
-                                            subtitles=bool(task['use_subtitles']),source_size=obj.get('size',0),**source_options)
+                                            subtitles=bool(task['use_subtitles']),source_size=obj.get('size',0),**source_options,**renewal)
                     try:
                         self.evidence_cache.save(cache_path,sample)
                     except OSError:
