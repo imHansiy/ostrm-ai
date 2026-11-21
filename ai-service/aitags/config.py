@@ -7,6 +7,7 @@ load_dotenv()
 DATA = Path(os.getenv("AI_DATA_DIR", "data")).resolve()
 OPENLIST_URL = os.getenv("OPENLIST_URL", "http://openlist:5244").rstrip("/")
 OPENLIST_TOKEN = os.getenv("OPENLIST_TOKEN", "")
+OPENLIST_LOCAL_CACHED_ADMIN = os.getenv('OPENLIST_LOCAL_CACHED_ADMIN','false').lower() == 'true'
 OPENLIST_USERNAME = os.getenv("OPENLIST_USERNAME", "admin")
 OPENLIST_PASSWORD = os.getenv("OPENLIST_PASSWORD", "")
 MODEL_KEY = os.getenv("MODEL_API_KEY", "")

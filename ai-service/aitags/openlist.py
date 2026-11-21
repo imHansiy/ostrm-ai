@@ -76,6 +76,19 @@ class OpenList:
             time.sleep(min(2, .5 * 2**attempt))
 
     def admin_token(self):
+        if config.OPENLIST_LOCAL_CACHED_ADMIN:
+            import ipaddress
+            from urllib.parse import urlsplit
+            try:
+                local = ipaddress.ip_address(urlsplit(self.url).hostname).is_loopback
+            except ValueError:
+                local = False
+            if not local:
+                raise HTTPException(503,'缓存授权模式仅允许回环地址')
+            user = self.me('')
+            if user.get('role') != 2:
+                raise HTTPException(503,'OpenList 未授予本地缓存管理员权限')
+            return ''
         with self.lock:
             if config.OPENLIST_PASSWORD and (not self.token or time.time() - self.login_time > 3600):
                 pwd = hashlib.sha256((config.OPENLIST_PASSWORD + '-https://github.com/alist-org/alist').encode()).hexdigest()

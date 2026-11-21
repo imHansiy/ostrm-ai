@@ -180,6 +180,8 @@ class Worker:
             return rid
 
     def enqueue(self, path, obj, rid, force=False):
+        if self.restore_deferred(path):
+            return False
         fp, ident = fingerprint(obj), identity(obj)
         now = time.time()
         with self.db.connect() as c:
@@ -209,7 +211,11 @@ class Worker:
             return True
 
     def excluded(self, path, settings):
-        return any(path == p or path.startswith(p.rstrip('/') + '/') for p in settings['exclude'])
+        return path in settings.get('restore_deferred_successes',{}) or any(path == p or path.startswith(p.rstrip('/') + '/') for p in settings['exclude'])
+
+    def restore_deferred(self, path):
+        row = self.db.one("SELECT value FROM settings WHERE `key`='restore_deferred_successes'")
+        return bool(row and path in json.loads(row['value']))
 
     def scan_once(self):
         settings = self.db.settings()
@@ -307,6 +313,9 @@ class Worker:
             if not row:
                 return False
             task = dict(row)
+            if self.restore_deferred(task['path']):
+                c.execute("UPDATE tasks SET state='cancelled',error=? WHERE id=?",('已在远端识别成功，等待恢复资料',task['id']))
+                return True
             current = c.execute('SELECT status,fingerprint,size FROM videos WHERE path=?',(task['path'],)).fetchone()
             if current and current['status']=='done' and current['fingerprint']==task['fingerprint']:
                 c.execute("UPDATE tasks SET state='done',error='' WHERE id=?",(task['id'],))
@@ -341,6 +350,8 @@ class Worker:
             report(size=obj.get('size',0))
             if fingerprint(obj) != task['fingerprint']:
                 raise RuntimeError('视频已变化，请重新扫描后识别')
+            self.db.execute("UPDATE videos SET modified=?,identity=?,size=? WHERE path=? AND modified=''",
+                            (obj.get('modified',''),identity(obj),obj.get('size',0),task['path']))
             settings = self.db.settings()
             if obj.get('size',0) > settings['max_video_bytes']:
                 raise RuntimeError('视频超过大小上限')
