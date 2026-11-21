@@ -152,6 +152,20 @@ http {
         location ~ ^/cinema(/.*)$ { return 302 /@CINEMA_PATH@$1$is_args$args; }
         '''.replace('@CINEMA_PATH@',cinema_path)
     source=source.replace('@CINEMA_LOCATION@',cinema)
+    if os.getenv('OPENLIST_LOCAL_CACHED_ADMIN','false').lower()=='true':
+        source=source.replace('http {','http {\n    map "$http_authorization|$http_x_ai_bridge" $ai_restore_auth { default 1; "|" 0; }',1)
+        ai_host='['+hosts['ai']+']' if ':' in hosts['ai'] else hosts['ai']
+        guarded=f'''location ^~ /ai/api/ {{
+            if ($ai_restore_auth = 0) {{ return 401; }}
+            proxy_pass http://{ai_host}:{ports['ai']};
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_read_timeout 210s;
+            client_max_body_size 1m;
+            add_header Cache-Control "no-store" always;
+        }}
+        '''
+        source=source.replace('location /ai/ {',guarded+'location /ai/ {',1)
     (ROOT/'runtime/nginx.conf').write_text(source,encoding='utf-8')
     print('Native runtime paths and gateway configuration prepared.')
 elif mode=='cinema-start':

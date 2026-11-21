@@ -155,6 +155,8 @@ def create_app(db=None, ol=None, background=True):
     def auth(request, admin=False):
         token = request.headers.get('authorization','')
         bridge=request.headers.get('x-ai-bridge','')
+        if config.OPENLIST_LOCAL_CACHED_ADMIN and not token and not bridge:
+            raise HTTPException(401,'恢复模式需要明确的管理凭据')
         if bridge:
             import hmac
             expected=os.getenv('AI_BRIDGE_KEY','')

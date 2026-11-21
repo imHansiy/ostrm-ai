@@ -46,3 +46,13 @@ def test_stale_queued_success_is_skipped_without_reading_media(env,monkeypatch):
     assert db.one('SELECT state FROM tasks')['state']=='cancelled'
     assert db.one('SELECT status FROM videos')['status']!='done'
     assert db.one('SELECT attempts FROM tasks')['attempts']==0
+
+
+def test_restore_mode_does_not_expose_cached_admin_to_anonymous_browser(env,monkeypatch):
+    db,ol,w,client=env
+    monkeypatch.setattr(config,'OPENLIST_LOCAL_CACHED_ADMIN',True)
+    monkeypatch.setattr(ol,'me',lambda token:{'role':2,'base_path':'/','disabled':False})
+    monkeypatch.setenv('AI_BRIDGE_KEY','test-private-server-bridge')
+    assert client.get('/ai/api/settings').status_code==401
+    assert client.get('/ai/api/settings',headers={'X-AI-Bridge':'wrong'}).status_code==401
+    assert client.get('/ai/api/settings',headers={'X-AI-Bridge':'test-private-server-bridge'}).status_code==200
